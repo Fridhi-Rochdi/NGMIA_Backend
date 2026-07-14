@@ -1,0 +1,361 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// Multi-Tenant Core Models
+// ============================================
+
+model Tenant {
+  id          String   @id @default(uuid())
+  name        String
+  slug        String   @unique
+  domain      String?
+  logo        String?
+  plan        Plan     @default(FREE)
+  maxUsers    Int      @default(5)
+  maxProjects Int      @default(3)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  users       User[]
+  brands      Brand[]
+  contents    Content[]
+  images      Image[]
+  calendars   Calendar[]
+  socialAccounts SocialAccount[]
+  subscription Subscription?
+  paymentMethods PaymentMethod[]
+
+  @@map("tenants")
+}
+
+model User {
+  id            String    @id @default(uuid())
+  email         String
+  password      String
+  firstName     String?
+  lastName      String?
+  avatar        String?
+  role          UserRole  @default(MEMBER)
+  isActive      Boolean   @default(true)
+  emailVerified Boolean   @default(false)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  tenantId      String
+  tenant        Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  contents      Content[]
+  images        Image[]
+  calendars     Calendar[]
+
+  @@unique([email, tenantId])
+  @@map("users")
+}
+
+// ============================================
+// Branding Module
+// ============================================
+
+model Brand {
+  id          String   @id @default(uuid())
+  name        String
+  slug        String
+  logo        String?
+  primaryColor String  @default("#3b82f6")
+  secondaryColor String @default("#1e3a8a")
+  accentColor String   @default("#22c55e")
+  fontFamily  String   @default("Inter")
+  tagline     String?
+  description String?
+  tone        String   @default("professional")
+  industry    String?
+  targetAudience String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([slug, tenantId])
+  @@map("brands")
+}
+
+// ============================================
+// Content Module
+// ============================================
+
+model Content {
+  id          String        @id @default(uuid())
+  title       String
+  body        String
+  type        ContentType   @default(POST)
+  platform    Platform?
+  tone        String        @default("professional")
+  length      ContentLength @default(MEDIUM)
+  hashtags    String?
+  callToAction String?
+  status      ContentStatus @default(DRAFT)
+  aiModel     String        @default("gpt-4-simulated")
+  prompt      String?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  tenantId    String
+  tenant      Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("contents")
+}
+
+// ============================================
+// Image Module
+// ============================================
+
+model Image {
+  id          String     @id @default(uuid())
+  prompt      String
+  url         String
+  thumbnailUrl String?
+  width       Int?
+  height      Int?
+  style       String     @default("realistic")
+  format      String     @default("png")
+  aiModel     String     @default("dall-e-simulated")
+  status      ImageStatus @default(PENDING)
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  tenantId    String
+  tenant      Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("images")
+}
+
+// ============================================
+// Calendar / Planner Module
+// ============================================
+
+model Calendar {
+  id          String   @id @default(uuid())
+  name        String
+  description String?
+  startDate   DateTime
+  endDate     DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  events      CalendarEvent[]
+
+  @@map("calendars")
+}
+
+model CalendarEvent {
+  id          String          @id @default(uuid())
+  title       String
+  description String?
+  platform    Platform?
+  scheduledAt DateTime
+  status      EventStatus     @default(SCHEDULED)
+  contentId   String?
+  imageId     String?
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  calendarId  String
+  calendar    Calendar        @relation(fields: [calendarId], references: [id], onDelete: Cascade)
+
+  @@map("calendar_events")
+}
+
+// ============================================
+// Social Module
+// ============================================
+
+model SocialAccount {
+  id          String         @id @default(uuid())
+  platform    Platform
+  accountId   String
+  username    String
+  accessToken String
+  refreshToken String?
+  isActive    Boolean        @default(true)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  tenantId    String
+  tenant      Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([platform, accountId, tenantId])
+  @@map("social_accounts")
+}
+
+// ============================================
+// Enums
+// ============================================
+
+enum Plan {
+  FREE
+  STARTER
+  PRO
+  ENTERPRISE
+}
+
+enum UserRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+enum ContentType {
+  POST
+  BLOG
+  AD
+  EMAIL
+  SLOGAN
+  DESCRIPTION
+}
+
+enum ContentLength {
+  SHORT
+  MEDIUM
+  LONG
+}
+
+enum ContentStatus {
+  DRAFT
+  GENERATED
+  PUBLISHED
+  ARCHIVED
+}
+
+enum ImageStatus {
+  PENDING
+  GENERATING
+  COMPLETED
+  FAILED
+}
+
+enum Platform {
+  FACEBOOK
+  INSTAGRAM
+  TWITTER
+  LINKEDIN
+  TIKTOK
+  YOUTUBE
+  WEBSITE
+  EMAIL
+}
+
+enum EventStatus {
+  SCHEDULED
+  PUBLISHED
+  CANCELLED
+  DRAFT
+}
+
+// ============================================
+// Payment Module
+// ============================================
+
+model Subscription {
+  id          String             @id @default(uuid())
+  stripeSubscriptionId String?
+  status      SubscriptionStatus @default(ACTIVE)
+  currentPeriodStart DateTime
+  currentPeriodEnd   DateTime
+  cancelAtPeriodEnd  Boolean     @default(false)
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+
+  tenantId    String             @unique
+  tenant      Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  planId      String
+  plan        PlanItem           @relation(fields: [planId], references: [id])
+  invoices    Invoice[]
+
+  @@map("subscriptions")
+}
+
+model PlanItem {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  description String?
+  price       Decimal  @db.Decimal(10, 2)
+  currency    String   @default("EUR")
+  interval    String   @default("month") // month, year
+  stripePriceId String?
+  features    Json?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  subscriptions Subscription[]
+
+  @@map("plans")
+}
+
+model Invoice {
+  id          String        @id @default(uuid())
+  stripeInvoiceId String?
+  amount      Decimal       @db.Decimal(10, 2)
+  currency    String        @default("EUR")
+  status      InvoiceStatus @default(PENDING)
+  paidAt      DateTime?
+  invoiceUrl  String?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  subscriptionId String
+  subscription   Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@map("invoices")
+}
+
+model PaymentMethod {
+  id          String   @id @default(uuid())
+  stripePaymentMethodId String @unique
+  type        String   @default("card")
+  brand       String?
+  last4       String?
+  expMonth    Int?
+  expYear     Int?
+  isDefault   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("payment_methods")
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  CANCELLED
+  PAST_DUE
+  UNPAID
+  TRIALING
+}
+
+enum InvoiceStatus {
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+}
