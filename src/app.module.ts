@@ -12,17 +12,20 @@ import { SocialModule } from './modules/social/social.module';
 import { ImagesModule } from './modules/images/images.module';
 import { BrandingModule } from './modules/branding/branding.module';
 import { PlannerModule } from './modules/planner/planner.module';
+import { QrCodeModule } from './modules/qr-code/qr-code.module';
+import { WebsiteModule } from './modules/website/website.module';
 import { TenantMiddleware } from './common/middleware/tenant.middleware';
 import appConfig from './config/app.config';
 import databaseConfig from './config/database.config';
 import jwtConfig from './config/jwt.config';
+import aiConfig from './config/ai.config';
 
 @Module({
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
       envFilePath: '../.env',
-      load: [appConfig, databaseConfig, jwtConfig],
+      load: [appConfig, databaseConfig, jwtConfig, aiConfig],
     }),
     SharedModule,
     PrismaModule,
@@ -34,6 +37,8 @@ import jwtConfig from './config/jwt.config';
     ImagesModule,
     BrandingModule,
     PlannerModule,
+    QrCodeModule,
+    WebsiteModule,
   ],
   controllers: [AppController],
   providers: [AppService],

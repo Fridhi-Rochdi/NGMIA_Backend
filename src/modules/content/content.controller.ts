@@ -14,7 +14,7 @@ export class ContentController {
 
   @Post('generate')
   async generate(@Body() dto: GenerateContentDto, @Request() req) {
-    return this.contentService.generateContent(req.user.userId, req.tenant.id, dto);
+    return this.contentService.generateContent(req.user.sub, req.tenant.id, dto);
   }
 
   @Get()

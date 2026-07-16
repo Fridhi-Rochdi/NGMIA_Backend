@@ -1,4 +1,4 @@
-import { Injectable, NestMiddleware, BadRequestException } from '@nestjs/common';
+import { Injectable, NestMiddleware } from '@nestjs/common';
 import { Request, Response, NextFunction } from 'express';
 import { PrismaService } from '../../common/prisma/prisma.service';
 
@@ -26,14 +26,20 @@ export class TenantMiddleware implements NestMiddleware {
       return next();
     }
 
-    // Try to resolve tenant from subdomain
+    // 1. Try to resolve tenant from X-Tenant-Slug header (primary method used by frontend)
+    const headerSlug = req.headers['x-tenant-slug'] as string | undefined;
+
+    // 2. Try to resolve from subdomain as a fallback
     const host = req.headers.host || '';
-    const subdomain = host.split('.')[0];
+    const parts = host.split('.');
+    const subdomainSlug =
+      parts.length > 1 && parts[0] !== 'localhost' && parts[0] !== 'api' && parts[0] !== 'www'
+        ? parts[0]
+        : null;
 
-    // Try to resolve tenant from X-Tenant-Slug header
-    const tenantSlug = req.headers['x-tenant-slug'] as string || subdomain;
+    const tenantSlug = headerSlug || subdomainSlug;
 
-    if (tenantSlug && tenantSlug !== 'localhost' && tenantSlug !== 'api') {
+    if (tenantSlug) {
       const tenant = await this.prisma.tenant.findUnique({
         where: { slug: tenantSlug, isActive: true },
       });
@@ -48,30 +54,10 @@ export class TenantMiddleware implements NestMiddleware {
       }
     }
 
-    // If user is authenticated, use their tenant
-    if (!req.tenant && (req as any).user?.tenantId) {
-      const tenant = await this.prisma.tenant.findUnique({
-        where: { id: (req as any).user.tenantId, isActive: true },
-      });
-
-      if (tenant) {
-        req.tenant = {
-          id: tenant.id,
-          name: tenant.name,
-          slug: tenant.slug,
-          plan: tenant.plan,
-        };
-      }
-    }
-
-    // For protected routes, tenant is required
-    const publicPaths = ['/auth/login', '/auth/register', '/api/docs', '/api', '/', '/health'];
-    const isPublicPath = publicPaths.some(p => req.path === p || req.path.startsWith(p));
-
-    if (!req.tenant && !isPublicPath) {
-      throw new BadRequestException('Tenant non trouvé. Utilisez le header X-Tenant-Slug.');
-    }
-
+    // Note: We do NOT throw here if no tenant is found.
+    // The middleware runs BEFORE the JwtAuthGuard, so req.user is not yet available.
+    // Tenant enforcement for protected routes is handled by TenantGuard, which
+    // runs AFTER JwtAuthGuard has validated the JWT and set req.user.
     next();
   }
-}
+}

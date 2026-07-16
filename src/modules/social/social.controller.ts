@@ -23,7 +23,7 @@ export class SocialController {
 
   @Post('posts/generate')
   async generatePost(@Body() dto: GenerateSocialPostDto, @Request() req) {
-    return this.socialService.generatePost(req.user.userId, req.tenant.id, dto);
+    return this.socialService.generatePost(req.user.sub, req.tenant.id, dto);
   }
 
   @Get('posts')

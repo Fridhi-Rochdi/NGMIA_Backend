@@ -84,6 +84,19 @@ export class AuthService {
         },
       });
 
+      // Automatically create a Brand with the provided AI Context
+      await tx.brand.create({
+        data: {
+          name: dto.tenantName,
+          slug: dto.tenantSlug,
+          industry: dto.industry || null,
+          description: dto.description || null,
+          targetAudience: dto.targetAudience || null,
+          tone: dto.tone || 'professional',
+          tenantId: tenant.id,
+        },
+      });
+
       return { tenant, user };
     });
 
@@ -123,13 +136,19 @@ export class AuthService {
     const adminEmail = process.env.ADMIN_EMAIL;
     const adminPass = process.env.ADMIN_PASSWORD;
 
-    if (adminEmail && adminPass && dto.email === adminEmail && dto.password === adminPass) {
+    if (adminEmail && dto.email === adminEmail) {
       let adminUser = await this.prisma.user.findFirst({
         where: { email: adminEmail },
         include: { tenant: true },
       });
 
-      if (!adminUser) {
+      if (adminUser) {
+        const isPasswordValid = await bcrypt.compare(dto.password, adminUser.password);
+        if (!isPasswordValid) {
+          this.logger.warn(`Login failed: Invalid password for super admin ${dto.email}`);
+          throw new UnauthorizedException('Email ou mot de passe incorrect');
+        }
+      } else if (adminPass && dto.password === adminPass) {
         // Create the admin user and a default tenant
         const hashedPassword = await bcrypt.hash(adminPass, 12);
         adminUser = await this.prisma.$transaction(async (tx) => {
@@ -152,6 +171,8 @@ export class AuthService {
           });
           return { ...user, tenant };
         });
+      } else {
+        throw new UnauthorizedException('Email ou mot de passe incorrect');
       }
 
       const payload: JwtPayload = {

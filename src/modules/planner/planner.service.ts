@@ -33,28 +33,32 @@ export class PlannerService {
       },
     });
 
-    for (let i = 0; i < days; i++) {
-      const scheduledDate = new Date(startDate);
-      scheduledDate.setDate(scheduledDate.getDate() + i);
-      const platform = dto.platforms[i % dto.platforms.length];
+    // Generate all event content in parallel (not sequentially) to avoid timeouts
+    const eventData = await Promise.all(
+      Array.from({ length: days }, async (_, i) => {
+        const scheduledDate = new Date(startDate);
+        scheduledDate.setDate(scheduledDate.getDate() + i);
+        const platform = dto.platforms[i % dto.platforms.length];
 
-      const content = await this.aiEngine.generateSocialPost({
-        topic: dto.topic,
-        platform,
-        tone: dto.tone || 'professional',
-      });
+        const content = await this.aiEngine.generateSocialPost({
+          topic: dto.topic,
+          platform,
+          tone: dto.tone || 'professional',
+        });
 
-      await this.prisma.calendarEvent.create({
-        data: {
+        return {
           calendarId: calendar.id,
           title: `${dto.topic} - Day ${i + 1}`,
           description: content,
           platform: platform as Platform,
           scheduledAt: scheduledDate,
           status: EventStatus.SCHEDULED,
-        },
-      });
-    }
+        };
+      }),
+    );
+
+    // Bulk insert all events in a single DB call
+    await this.prisma.calendarEvent.createMany({ data: eventData });
 
     return this.prisma.calendar.findUnique({
       where: { id: calendar.id },
@@ -107,8 +111,9 @@ export class PlannerService {
   }
 
   async updateEvent(id: string, tenantId: string, dto: UpdateCalendarEventDto) {
+    // Validate tenant ownership by joining through the calendar relation
     const event = await this.prisma.calendarEvent.findFirst({
-      where: { id },
+      where: { id, calendar: { tenantId } },
     });
     if (!event) throw new NotFoundException('Calendar event not found');
 
@@ -125,8 +130,9 @@ export class PlannerService {
   }
 
   async removeEvent(id: string, tenantId: string) {
+    // Validate tenant ownership by joining through the calendar relation
     const event = await this.prisma.calendarEvent.findFirst({
-      where: { id },
+      where: { id, calendar: { tenantId } },
     });
     if (!event) throw new NotFoundException('Calendar event not found');
     return this.prisma.calendarEvent.delete({ where: { id } });

@@ -19,12 +19,12 @@ export class PlannerController {
 
   @Post('generate')
   async generate(@Body() dto: GenerateCalendarDto, @Request() req) {
-    return this.plannerService.generateCalendar(req.user.userId, req.tenant.id, dto);
+    return this.plannerService.generateCalendar(req.user.sub, req.tenant.id, dto);
   }
 
   @Post()
   async create(@Body() dto: CreateCalendarDto, @Request() req) {
-    return this.plannerService.createCalendar(req.user.userId, req.tenant.id, dto);
+    return this.plannerService.createCalendar(req.user.sub, req.tenant.id, dto);
   }
 
   @Get()

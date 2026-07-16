@@ -19,37 +19,66 @@ import {
 @Injectable()
 export class AiEngineService {
   async generateText(options: GenerateTextOptions): Promise<string> {
-    const { prompt, tone = 'professional', length = 'medium' } = options;
+    const { prompt, tone = 'professional', length = 'MEDIUM' } = options;
+    const apiKey = process.env.NVIDIA_NIM_API_KEY;
+    const baseUrl = process.env.NVIDIA_NIM_BASE_URL || 'https://integrate.api.nvidia.com/v1';
+    const model = process.env.NVIDIA_NIM_TEXT_MODEL || 'meta/llama-3.1-70b-instruct';
 
-    const templates: Record<string, string[]> = {
-      professional: [
-        `We are excited to announce our latest initiative focused on ${prompt}. This strategic approach will help us achieve our goals and deliver exceptional value to our stakeholders.`,
-        `In today's competitive landscape, ${prompt} has become a critical factor for success. Our team is dedicated to leveraging this opportunity to drive growth and innovation.`,
-      ],
-      casual: [
-        `Hey everyone! We're super excited about ${prompt} and can't wait to share more with you. Stay tuned for some awesome updates!`,
-        `So, here's the deal with ${prompt} - we think it's going to be amazing and we hope you do too!`,
-      ],
-      humorous: [
-        `Why did the ${prompt} cross the road? To get to the other side of success! But seriously, we're excited about this.`,
-        `They say ${prompt} is the new black. We say it's the new everything! Let's make some magic happen.`,
-      ],
-      inspirational: [
-        `Believe in the power of ${prompt}. Together, we can achieve extraordinary things and create a lasting impact.`,
-        `The journey of ${prompt} begins with a single step. Let's take that step together and build something remarkable.`,
-      ],
-    };
-
-    const toneTemplates = templates[tone] || templates.professional;
-    const text = toneTemplates[Math.floor(Math.random() * toneTemplates.length)];
-
-    if (length === 'short') {
-      return text.split('.').slice(0, 2).join('.') + '.';
-    } else if (length === 'long') {
-      return text + ' ' + text + ' This is an extended version with more details and insights to provide comprehensive coverage of the topic.';
+    if (!apiKey) {
+      console.error('NVIDIA_NIM_API_KEY is not set in environment variables');
+      throw new Error('AI Engine is not configured correctly. Missing API Key.');
     }
 
-    return text;
+    // Determine target max_tokens based on length requested
+    let maxTokens = 500;
+    const upperLength = length.toUpperCase();
+    if (upperLength === 'SHORT') maxTokens = 200;
+    else if (upperLength === 'LONG') maxTokens = 1000;
+
+    const systemPrompt = `You are a world-class expert marketing copywriter and conversion strategist for NextGen MarketingAI.
+Your goal is to generate highly engaging, persuasive, and high-converting marketing content (Ads, Social Posts, Emails).
+
+STRICT CONSTRAINTS:
+1. Output language: You MUST write the final content in the SAME language as the user's prompt (e.g., if the user prompts in French, write in French. If in English, write in English).
+2. Tone: Adhere strictly to the requested tone: ${tone}.
+3. Formatting: Use proper spacing, bullet points, and appropriate emojis to make the text visually appealing and easy to read on mobile.
+4. Framework: Use proven marketing frameworks like AIDA (Attention, Interest, Desire, Action) or PAS (Problem, Agitation, Solution).
+5. Output ONLY the marketing copy itself. Do NOT include meta-commentary like "Here is your post:" or "Sure, I can help with that."
+
+Apply your deep understanding of human psychology, persuasion, and modern social media algorithms to maximize engagement and conversions.`;
+
+    try {
+      const response = await fetch(`${baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+          'Accept': 'application/json',
+        },
+        body: JSON.stringify({
+          model: model,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: prompt }
+          ],
+          temperature: 0.7,
+          max_tokens: maxTokens,
+          top_p: 1,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('NVIDIA API Error:', errorText);
+        throw new Error('Failed to generate content from AI engine');
+      }
+
+      const data = await response.json();
+      return data.choices[0].message.content.trim();
+    } catch (error) {
+      console.error('AI Generation Error:', error);
+      throw error;
+    }
   }
 
   async generateImage(options: GenerateImageOptions): Promise<string> {

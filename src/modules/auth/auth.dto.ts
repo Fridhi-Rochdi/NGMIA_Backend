@@ -32,6 +32,26 @@ export class RegisterDto {
   @MinLength(2)
   @MaxLength(50)
   tenantSlug: string;
+
+  @ApiPropertyOptional({ example: 'Technology' })
+  @IsOptional()
+  @IsString()
+  industry?: string;
+
+  @ApiPropertyOptional({ example: 'We provide AI solutions for businesses' })
+  @IsOptional()
+  @IsString()
+  description?: string;
+
+  @ApiPropertyOptional({ example: 'Small business owners' })
+  @IsOptional()
+  @IsString()
+  targetAudience?: string;
+
+  @ApiPropertyOptional({ example: 'Professional and innovative' })
+  @IsOptional()
+  @IsString()
+  tone?: string;
 }
 
 export class LoginDto {
