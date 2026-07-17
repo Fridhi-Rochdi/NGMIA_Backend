@@ -37,4 +37,10 @@ export class WebsiteController {
   async publishWebsite(@Param('id') id: string) {
     return this.websiteService.publishWebsite(id);
   }
-}
+
+  @UseGuards(JwtAuthGuard)
+  @Get(':id/deployment-status')
+  async getDeploymentStatus(@Param('id') id: string) {
+    return this.websiteService.getDeploymentStatus(id);
+  }
+}

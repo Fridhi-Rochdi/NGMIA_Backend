@@ -48,6 +48,23 @@ STRICT CONSTRAINTS:
 Apply your deep understanding of human psychology, persuasion, and modern social media algorithms to maximize engagement and conversions.`;
 
     try {
+      console.log(`[AI Engine] Sending request to ${baseUrl}/chat/completions`);
+      console.log(`[AI Engine] Model: ${model}`);
+      console.log(`[AI Engine] API Key starts with: ${apiKey.substring(0, 10)}...`);
+      
+      const payload = {
+        model: model,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: prompt }
+        ],
+        temperature: 0.7,
+        max_tokens: maxTokens,
+        top_p: 1,
+      };
+      
+      console.log(`[AI Engine] Payload:`, JSON.stringify(payload, null, 2));
+
       const response = await fetch(`${baseUrl}/chat/completions`, {
         method: 'POST',
         headers: {
@@ -55,30 +72,83 @@ Apply your deep understanding of human psychology, persuasion, and modern social
           'Authorization': `Bearer ${apiKey}`,
           'Accept': 'application/json',
         },
-        body: JSON.stringify({
-          model: model,
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: prompt }
-          ],
-          temperature: 0.7,
-          max_tokens: maxTokens,
-          top_p: 1,
-        }),
+        body: JSON.stringify(payload),
       });
 
       if (!response.ok) {
         const errorText = await response.text();
-        console.error('NVIDIA API Error:', errorText);
-        throw new Error('Failed to generate content from AI engine');
+        console.error('[AI Engine] NVIDIA API Error Response:', response.status, response.statusText, errorText);
+        throw new Error(`Failed to generate content from AI engine: ${response.status} - ${errorText}`);
       }
 
       const data = await response.json();
-      return data.choices[0].message.content.trim();
+      console.log('[AI Engine] Response Data:', JSON.stringify(data).substring(0, 500) + '...');
+      
+      const generatedText = data.choices[0].message.content.trim();
+      console.log('[AI Engine] Generated Text (first 100 chars):', generatedText.substring(0, 100));
+      return generatedText;
     } catch (error) {
-      console.error('AI Generation Error:', error);
+      console.error('[AI Engine] AI Generation Error Caught:', error);
       throw error;
     }
+  }
+
+  async generateWebsiteHtml(options: {
+    prompt: string;
+    businessName: string;
+    template?: string;
+    colors?: { primary?: string; secondary?: string; accent?: string };
+  }): Promise<string> {
+    const apiKey = process.env.NVIDIA_NIM_API_KEY;
+    const baseUrl = process.env.NVIDIA_NIM_BASE_URL || 'https://integrate.api.nvidia.com/v1';
+    const model = process.env.NVIDIA_NIM_TEXT_MODEL || 'meta/llama-3.1-70b-instruct';
+
+    if (!apiKey) {
+      throw new Error('AI Engine is not configured correctly. Missing API Key.');
+    }
+
+    const systemPrompt = `You are an expert web developer specializing in creating stunning, professional business showcase websites.
+You generate complete, self-contained HTML files with embedded Tailwind CSS and animations.
+
+STRICT RULES:
+1. Output ONLY a complete, valid HTML document starting with <!DOCTYPE html>
+2. Use Tailwind CSS via CDN: <script src="https://cdn.tailwindcss.com"></script>
+3. Use Google Fonts Inter for typography
+4. Create a FULL website with: sticky navigation, hero section, services, about, contact form, footer
+5. The website must be responsive (mobile-first)
+6. Add smooth scroll, hover effects, and CSS animations
+7. Use the exact colors specified by the user
+8. Write all content in FRENCH
+9. DO NOT include any explanation or markdown — ONLY raw HTML
+10. The site must look premium and professional`;
+
+    const response = await fetch(`${baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+        'Accept': 'application/json',
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: options.prompt },
+        ],
+        temperature: 0.5,
+        max_tokens: 4096,
+        top_p: 1,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('NVIDIA API Error (website):', errorText);
+      throw new Error('Failed to generate website HTML from AI engine');
+    }
+
+    const data = await response.json();
+    return data.choices[0].message.content.trim();
   }
 
   async generateImage(options: GenerateImageOptions): Promise<string> {

@@ -231,6 +231,11 @@ model Website {
   subdomain    String         @unique
   status       WebsiteStatus  @default(DRAFT)
   publishedAt  DateTime?
+  // Vercel deployment
+  vercelProjectId    String?
+  vercelDeploymentId String?
+  vercelUrl          String?
+  deploymentStatus   String?  @default("NONE")
   createdAt    DateTime       @default(now())
   updatedAt    DateTime       @updatedAt
 
@@ -241,6 +246,7 @@ model Website {
 
   @@map("websites")
 }
+
 
 // ============================================
 // QR Code Module
