@@ -226,6 +226,12 @@ model Website {
   secondaryColor String       @default("#1e3a8a")
   accentColor  String         @default("#22c55e")
   template     String         @default("modern")
+  fontFamily   String         @default("Inter")
+  logoUrl      String?
+  logoText     String?
+  // Structured, editable source of truth: { meta, theme, logo, sections[], contact }
+  content      Json?
+  // Compiled HTML cache (rendered from `content`); regenerated on every change.
   html         String         @db.Text
   css          String          @db.Text
   subdomain    String         @unique
