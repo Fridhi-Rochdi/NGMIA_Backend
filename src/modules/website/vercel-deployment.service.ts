@@ -69,42 +69,38 @@ export class VercelDeploymentService {
     businessName: string,
   ): Promise<VercelDeploymentResult> {
     this.logger.log(`Starting Vercel deployment for: ${subdomain}`);
+    if (!this.token) {
+      throw new Error('VERCEL_TOKEN is not configured.');
+    }
     const projectName = `ngmia-${subdomain}`.slice(0, 52).replace(/[^a-z0-9-]/g, '-');
-    const projectId = await this.ensureProject(subdomain);
     const fullHtml = this.buildFullHtml(html, css, businessName);
-    const sha1 = crypto.createHash('sha1').update(fullHtml).digest('hex');
-    const fileSize = Buffer.byteLength(fullHtml, 'utf8');
 
-    await fetch(this.appendTeam(`${this.baseUrl}/v2/files`), {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${this.token}`,
-        'Content-Type': 'application/octet-stream',
-        'x-now-digest': sha1,
-        'x-now-size': fileSize.toString(),
-      },
-      body: fullHtml,
-    });
-
+    // Single-call deployment with inline file content; auto-creates the project.
     const deployRes = await fetch(this.appendTeam(`${this.baseUrl}/v13/deployments`), {
       method: 'POST',
       headers: this.getHeaders(),
       body: JSON.stringify({
         name: projectName,
         target: 'production',
-        files: [{ file: 'index.html', sha: sha1, size: fileSize }],
-        projectSettings: { framework: null, buildCommand: null, outputDirectory: null, installCommand: null },
+        files: [{ file: 'index.html', data: fullHtml }],
+        projectSettings: { framework: null },
       }),
     });
 
     if (!deployRes.ok) {
       const err = await deployRes.text();
+      if (deployRes.status === 403) {
+        throw new Error(
+          'Vercel a refusé le déploiement (403). Le token Vercel n’a pas la permission de créer des projets. ' +
+            'Générez un nouveau token avec accès complet sur vercel.com → Settings → Tokens, puis mettez à jour VERCEL_TOKEN.',
+        );
+      }
       throw new Error(`Vercel deployment failed: ${err}`);
     }
 
     const deployData = await deployRes.json();
     return {
-      projectId,
+      projectId: deployData.projectId || deployData.project?.id || '',
       deploymentId: deployData.id,
       url: `https://${deployData.url}`,
       status: deployData.readyState === 'READY' ? 'READY' : 'BUILDING',

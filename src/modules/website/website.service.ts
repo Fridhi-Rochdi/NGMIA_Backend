@@ -1,35 +1,51 @@
-import { Injectable, NotFoundException, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  ForbiddenException,
+  BadRequestException,
+  Logger,
+} from '@nestjs/common';
 import { AiEngineService } from '../ai-engine/ai-engine.service';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { StorageService } from '../../common/storage/storage.service';
 import { VercelDeploymentService } from './vercel-deployment.service';
+import { WebsiteRendererService } from './website-renderer.service';
+import { buildContent, BuildInput, normalizeSection } from './website-content.builder';
+import { getPath, setPath } from './content-path.util';
+import { WebsiteContent, Section } from './website-content.types';
+
+export interface ProductDto {
+  name: string;
+  price: string;
+  imageUrl?: string;
+  imagePrompt?: string;
+  description?: string;
+}
 
 export interface WebsiteGenerationDto {
   businessName: string;
   businessType: string;
   description: string;
   services?: string[];
+  products?: ProductDto[];
+  gallery?: { enabled?: boolean; images?: { imageUrl?: string; imagePrompt?: string }[] };
+  context?: string;
   contactInfo?: {
     phone?: string;
     email?: string;
     address?: string;
+    whatsapp?: string;
+    googleReviewUrl?: string;
+    googleMapsUrl?: string;
+    hours?: string;
+    mapQuery?: string;
   };
-  colors?: {
-    primary?: string;
-    secondary?: string;
-    accent?: string;
-  };
+  colors?: { primary?: string; secondary?: string; accent?: string };
+  fontFamily?: string;
+  language?: 'fr' | 'en' | 'es' | 'ar' | 'de';
+  currency?: string;
   template?: 'modern' | 'classic' | 'minimal' | 'bold';
-}
-
-export interface GeneratedWebsite {
-  id: string;
-  subdomain: string;
-  html: string;
-  css: string;
-  previewUrl: string;
-  publishedAt?: Date;
-  vercelUrl?: string;
-  deploymentStatus?: string;
+  logoUrl?: string;
 }
 
 @Injectable()
@@ -39,32 +55,80 @@ export class WebsiteService {
   constructor(
     private readonly aiEngineService: AiEngineService,
     private readonly prisma: PrismaService,
+    private readonly storage: StorageService,
+    private readonly renderer: WebsiteRendererService,
     private readonly vercelDeploymentService: VercelDeploymentService,
   ) {}
 
-  async generateWebsite(dto: WebsiteGenerationDto, tenantId: string, userId: string): Promise<GeneratedWebsite> {
-    const prompt = this.buildPrompt(dto);
+  // ---------- create ----------
 
-    let html = '';
-    let css = '';
-
-    try {
-      const aiResponse = await this.aiEngineService.generateWebsiteHtml({
-        prompt,
-        businessName: dto.businessName,
-        template: dto.template || 'modern',
-        colors: dto.colors,
-      });
-      const parsed = this.parseAiResponse(aiResponse);
-      html = parsed.html;
-      css = parsed.css;
-    } catch (err) {
-      this.logger.warn(`AI generation failed, using fallback template: ${err.message}`);
-      const fallback = this.buildFallbackHtml(dto);
-      html = fallback.html;
-      css = fallback.css;
+  async generateWebsite(dto: WebsiteGenerationDto, tenantId: string, userId: string) {
+    if (!tenantId || !userId) {
+      throw new BadRequestException('Missing tenant or user context');
     }
 
+    const products = dto.products || [];
+    const language = dto.language || 'fr';
+
+    // Resolve the pasted Google Maps URL into an embeddable location.
+    const contact = { ...(dto.contactInfo || {}) };
+    if (contact.googleMapsUrl) {
+      const resolved = await this.resolveMapFromUrl(contact.googleMapsUrl);
+      if (resolved.mapQuery) contact.mapQuery = resolved.mapQuery;
+      if (!contact.address && resolved.address) contact.address = resolved.address;
+    }
+
+    const input: BuildInput = {
+      businessName: dto.businessName,
+      businessType: dto.businessType,
+      description: dto.description,
+      services: dto.services,
+      products,
+      gallery: dto.gallery,
+      context: dto.context,
+      contact,
+      colors: dto.colors,
+      fontFamily: dto.fontFamily,
+      template: dto.template,
+      logoUrl: dto.logoUrl,
+      language,
+      currency: dto.currency,
+    };
+
+    // Pull tone / target audience from the tenant's brand to enrich the copy.
+    const brand = await this.prisma.brand.findFirst({ where: { tenantId } });
+    input.tone = brand?.tone || 'professional';
+    input.targetAudience = brand?.targetAudience || undefined;
+
+    let ai: any = undefined;
+    try {
+      ai = await this.aiEngineService.generateWebsiteContentJson({
+        businessName: input.businessName,
+        businessType: input.businessType,
+        description: input.description,
+        services: input.services,
+        targetAudience: input.targetAudience,
+        tone: input.tone,
+        language: input.language,
+        context: input.context,
+        // When the user provides products, skip the AI "services" section.
+        sections: products.length
+          ? ['hero', 'about', 'testimonials', 'faq', 'cta', 'contact']
+          : undefined,
+      });
+    } catch (err: any) {
+      this.logger.warn(`AI content generation failed, using fallback: ${err.message}`);
+    }
+
+    const content = buildContent(input, ai);
+    // Fill every empty image slot (hero, about, gallery, products, custom) with AI.
+    // Pass rich business context so images match the actual business, not a
+    // generic (and often wrong) interpretation of just the category.
+    const bizContext = [dto.businessType, dto.businessName, (dto.description || '').slice(0, 120)]
+      .filter(Boolean)
+      .join(', ');
+    await this.generateContentImages(content, bizContext, `t-${tenantId}`);
+    const html = this.renderer.render(content);
     const subdomain = this.generateSubdomain(dto.businessName);
 
     const website = await this.prisma.website.create({
@@ -76,215 +140,579 @@ export class WebsiteService {
         contactPhone: dto.contactInfo?.phone,
         contactEmail: dto.contactInfo?.email,
         contactAddress: dto.contactInfo?.address,
-        primaryColor: dto.colors?.primary || '#3b82f6',
-        secondaryColor: dto.colors?.secondary || '#1e3a8a',
-        accentColor: dto.colors?.accent || '#22c55e',
-        template: dto.template || 'modern',
+        primaryColor: content.theme.primaryColor,
+        secondaryColor: content.theme.secondaryColor,
+        accentColor: content.theme.accentColor,
+        fontFamily: content.theme.fontFamily,
+        template: content.theme.template,
+        logoUrl: content.logo.type === 'image' ? content.logo.imageUrl : null,
+        logoText: content.logo.text,
+        content: content as any,
         html,
-        css,
+        css: '',
         subdomain,
         status: 'DRAFT',
+        deploymentStatus: 'NONE',
         tenantId,
         userId,
-        deploymentStatus: 'NONE',
       },
     });
 
+    return this.toResponse(website);
+  }
+
+  /**
+   * Fill every empty image slot across the content with an AI-generated image,
+   * in small parallel batches (to stay within provider limits). If generation
+   * is disabled/fails, generateImage returns an instant placeholder.
+   */
+  private async generateContentImages(content: WebsiteContent, bizContext: string, scope: string) {
+    const tasks: { prompt: string; assign: (url: string) => void }[] = [];
+    const clean = ', realistic high quality professional photography, no animals, no text, no watermark';
+
+    for (const s of content.sections) {
+      const d: any = s.data || {};
+      if ((s.type === 'hero' || s.type === 'about' || s.type === 'custom') && !d.imageUrl) {
+        tasks.push({
+          prompt: (d.imagePrompt ? d.imagePrompt : `${bizContext}, interior ambiance`) + clean,
+          assign: (u) => (d.imageUrl = u),
+        });
+      }
+      if (s.type === 'gallery' && Array.isArray(d.images)) {
+        d.images.forEach((img: string, i: number) => {
+          if (!img) {
+            const custom = d.imagePrompts?.[i];
+            tasks.push({
+              prompt: (custom ? custom : `${bizContext}, interior ambiance, atmosphere`) + clean,
+              assign: (u) => (d.images[i] = u),
+            });
+          }
+        });
+      }
+      if (s.type === 'products' && Array.isArray(d.items)) {
+        d.items.forEach((it: any) => {
+          if (!it.imageUrl) {
+            tasks.push({
+              prompt: it.imagePrompt
+                ? `${it.imagePrompt}, ${bizContext}, clean neutral background, realistic professional product photography, no text, no watermark`
+                : `Professional product photograph of "${it.name}"${it.description ? ' (' + it.description + ')' : ''}, ${bizContext}, clean neutral background, soft studio lighting, realistic, sharp focus, no text, no watermark`,
+              assign: (u) => (it.imageUrl = u),
+            });
+          }
+        });
+      }
+    }
+
+    const BATCH = 3;
+    for (let i = 0; i < tasks.length; i += BATCH) {
+      await Promise.all(
+        tasks.slice(i, i + BATCH).map(async (t) => {
+          try {
+            const url = await this.aiEngineService.generateImage({
+              prompt: t.prompt,
+              size: '1024x1024',
+              scope,
+            } as any);
+            t.assign(url);
+          } catch (err: any) {
+            this.logger.warn(`Slot image generation failed: ${err.message}`);
+          }
+        }),
+      );
+    }
+  }
+
+  // ---------- read (ownership-checked) ----------
+
+  async listWebsites(tenantId: string) {
+    const websites = await this.prisma.website.findMany({
+      where: { tenantId },
+      orderBy: { createdAt: 'desc' },
+    });
+    return websites.map((w) => this.toSummary(w));
+  }
+
+  async getWebsite(id: string, tenantId: string) {
+    return this.toResponse(await this.owned(id, tenantId));
+  }
+
+  async getWebsiteBySubdomain(subdomain: string) {
+    const website = await this.prisma.website.findUnique({ where: { subdomain } });
+    if (!website || website.status !== 'PUBLISHED') {
+      throw new NotFoundException('Website not found or not published');
+    }
     return {
       id: website.id,
-      subdomain: website.subdomain,
       html: website.html,
-      css: website.css,
-      previewUrl: `https://${subdomain}.vercel.app`,
-      deploymentStatus: 'NONE',
+      subdomain: website.subdomain,
+      businessName: website.businessName,
+      status: website.status,
     };
   }
 
-  private buildPrompt(dto: WebsiteGenerationDto): string {
-    const primaryColor = dto.colors?.primary || '#3b82f6';
-    const secondaryColor = dto.colors?.secondary || '#1e3a8a';
-    const accentColor = dto.colors?.accent || '#22c55e';
+  // ---------- edit: text ----------
 
-    return `Génère un site web vitrine professionnel COMPLET en HTML pour "${dto.businessName}".
-
-Type d'entreprise: ${dto.businessType}
-Description: ${dto.description}
-${dto.services?.length ? `Services: ${dto.services.join(', ')}` : ''}
-${dto.contactInfo?.phone ? `Téléphone: ${dto.contactInfo.phone}` : ''}
-${dto.contactInfo?.email ? `Email: ${dto.contactInfo.email}` : ''}
-${dto.contactInfo?.address ? `Adresse: ${dto.contactInfo.address}` : ''}
-Couleur primaire: ${primaryColor}
-Couleur secondaire: ${secondaryColor}
-Couleur accent: ${accentColor}
-Style template: ${dto.template || 'modern'}
-
-INSTRUCTIONS STRICTES:
-- Retourne UNIQUEMENT un document HTML complet valide commençant par <!DOCTYPE html>
-- Inclure la balise <html lang="fr">, <head> avec charset, viewport, title, et <body>
-- Utiliser Tailwind CSS via CDN: <script src="https://cdn.tailwindcss.com"></script>
-- Inclure Google Fonts Inter: <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
-- Créer un site COMPLET avec: Hero section, Services/Produits, A propos, Contact, Footer
-- Utiliser les couleurs fournies comme couleurs principales du site
-- Rendre le site responsive (mobile-first)
-- Ajouter des animations CSS subtiles (hover effects, transitions)
-- NE PAS inclure de JSON wrapper, retourner directement le HTML
-- Le site doit être prêt à publier tel quel`;
+  async updateText(id: string, tenantId: string, path: string, value: string) {
+    const website = await this.owned(id, tenantId);
+    const content = this.content(website);
+    if (typeof value !== 'string') throw new BadRequestException('value must be a string');
+    if (!setPath(content, path, value)) {
+      throw new BadRequestException(`Path not editable: ${path}`);
+    }
+    return this.persist(id, content);
   }
 
-  private parseAiResponse(response: string): { html: string; css: string } {
-    // Try JSON parse first (old format)
-    try {
-      const parsed = JSON.parse(response);
-      if (parsed.html) {
-        return { html: parsed.html, css: parsed.css || '' };
-      }
-    } catch {}
+  // ---------- edit: images (upload or AI-generated) ----------
 
-    // Extract HTML if it starts with <!DOCTYPE or <html
-    const htmlMatch = response.match(/(<!DOCTYPE html[\s\S]*<\/html>)/i);
-    if (htmlMatch) {
-      return { html: htmlMatch[1], css: '' };
+  /** Set an image slot from an already-stored URL (used after multipart upload). */
+  async setImageUrl(id: string, tenantId: string, path: string, url: string) {
+    const website = await this.owned(id, tenantId);
+    const content = this.content(website);
+    this.applyImage(content, path, url);
+    return this.persist(id, content);
+  }
+
+  /** Generate an image with AI for a given slot. */
+  async generateImageForSlot(id: string, tenantId: string, path: string, prompt?: string) {
+    const website = await this.owned(id, tenantId);
+    const content = this.content(website);
+    const seed =
+      prompt ||
+      getPath(content, path.replace(/\.imageUrl$/, '.imagePrompt')) ||
+      content.meta.title;
+    const url = await this.aiEngineService.generateImage({
+      prompt: String(seed),
+      size: '1024x1024',
+      scope: id,
+    } as any);
+    this.applyImage(content, path, url);
+    return this.persist(id, content);
+  }
+
+  private applyImage(content: WebsiteContent, path: string, url: string) {
+    if (path === 'logo.imageUrl') {
+      content.logo = { type: 'image', imageUrl: url, text: content.logo.text };
+      return;
+    }
+    if (!setPath(content, path, url)) {
+      throw new BadRequestException(`Path not editable: ${path}`);
+    }
+  }
+
+  /** Remove the logo image and fall back to a generated wordmark. */
+  async resetLogoToWordmark(id: string, tenantId: string) {
+    const website = await this.owned(id, tenantId);
+    const content = this.content(website);
+    content.logo = { type: 'wordmark', text: content.logo.text || website.businessName };
+    return this.persist(id, content);
+  }
+
+  // ---------- theme ----------
+
+  async updateTheme(id: string, tenantId: string, theme: Partial<WebsiteContent['theme']>) {
+    const website = await this.owned(id, tenantId);
+    const content = this.content(website);
+    content.theme = { ...content.theme, ...theme };
+    return this.persistTheme(id, content);
+  }
+
+  /** AI design assistant: apply a free-text instruction to the theme only. */
+  async applyDesignInstruction(id: string, tenantId: string, instruction: string) {
+    if (!instruction?.trim()) throw new BadRequestException('Describe the change you want');
+    const website = await this.owned(id, tenantId);
+    const content = this.content(website);
+
+    let patch: any;
+    try {
+      patch = await this.aiEngineService.generateThemePatch(instruction, content.theme);
+    } catch (err: any) {
+      throw new BadRequestException(`Design assistant failed: ${err.message}`);
+    }
+    content.theme = { ...content.theme, ...this.sanitizeThemePatch(patch) };
+    return this.persistTheme(id, content);
+  }
+
+  /** Whitelist + validate an LLM-produced theme patch. */
+  private sanitizeThemePatch(patch: any): Partial<WebsiteContent['theme']> {
+    const out: any = {};
+    if (!patch || typeof patch !== 'object') return out;
+    const inSet = (v: any, set: string[]) => (set.includes(v) ? v : undefined);
+    const hex = (v: any) => (typeof v === 'string' && /^#[0-9a-fA-F]{6}$/.test(v) ? v : undefined);
+    const map: Record<string, (v: any) => any> = {
+      radius: (v) => inSet(v, ['none', 'small', 'medium', 'large', 'full']),
+      buttonStyle: (v) => inSet(v, ['pill', 'rounded', 'square']),
+      density: (v) => inSet(v, ['compact', 'normal', 'spacious']),
+      template: (v) => inSet(v, ['modern', 'classic', 'minimal', 'bold']),
+      fontFamily: (v) => inSet(v, ['Inter', 'Poppins', 'Montserrat', 'Playfair Display', 'Roboto', 'Lora']),
+      animations: (v) => (typeof v === 'boolean' ? v : undefined),
+      primaryColor: hex,
+      secondaryColor: hex,
+      accentColor: hex,
+    };
+    for (const [k, fn] of Object.entries(map)) {
+      const v = fn(patch[k]);
+      if (v !== undefined) out[k] = v;
+    }
+    return out;
+  }
+
+  private persistTheme(id: string, content: WebsiteContent) {
+    return this.persist(id, content, {
+      primaryColor: content.theme.primaryColor,
+      secondaryColor: content.theme.secondaryColor,
+      accentColor: content.theme.accentColor,
+      fontFamily: content.theme.fontFamily,
+      template: content.theme.template,
+    });
+  }
+
+  // ---------- sections: add / delete / reorder / toggle ----------
+
+  async addSection(id: string, tenantId: string, request: string) {
+    if (!request?.trim()) throw new BadRequestException('Describe the section to add');
+    const website = await this.owned(id, tenantId);
+    const content = this.content(website);
+
+    let raw: any;
+    try {
+      raw = await this.aiEngineService.generateSectionJson({
+        request,
+        businessName: website.businessName,
+        businessType: website.businessType,
+        description: website.description,
+        language: content.meta.language,
+      });
+    } catch (err: any) {
+      this.logger.warn(`Section generation failed: ${err.message}`);
+      raw = { type: 'custom', data: { heading: request, subheading: '', body: '', items: [] } };
+    }
+    const section = normalizeSection(raw);
+    if (!section) throw new BadRequestException('Could not build section');
+    section.data.request = request; // remembered for later regeneration
+
+    // Insert before the contact section if present, else append.
+    const contactIdx = content.sections.findIndex((s) => s.type === 'contact');
+    if (contactIdx >= 0) content.sections.splice(contactIdx, 0, section);
+    else content.sections.push(section);
+
+    return this.persist(id, content);
+  }
+
+  async deleteSection(id: string, tenantId: string, sectionId: string) {
+    const website = await this.owned(id, tenantId);
+    const content = this.content(website);
+    const before = content.sections.length;
+    content.sections = content.sections.filter((s) => s.id !== sectionId);
+    if (content.sections.length === before) throw new NotFoundException('Section not found');
+    return this.persist(id, content);
+  }
+
+  async reorderSections(id: string, tenantId: string, order: string[]) {
+    const website = await this.owned(id, tenantId);
+    const content = this.content(website);
+    const map = new Map(content.sections.map((s) => [s.id, s]));
+    const reordered = order.map((sid) => map.get(sid)).filter((s): s is Section => !!s);
+    for (const s of content.sections) if (!order.includes(s.id)) reordered.push(s);
+    content.sections = reordered;
+    return this.persist(id, content);
+  }
+
+  /** Add a blank item (name/description/price/image) to a section's list. */
+  async addItem(id: string, tenantId: string, sectionId: string) {
+    const website = await this.owned(id, tenantId);
+    const content = this.content(website);
+    const section = content.sections.find((s) => s.id === sectionId);
+    if (!section) throw new NotFoundException('Section not found');
+    if (!Array.isArray(section.data.items)) section.data.items = [];
+    section.data.items.push({ name: 'Nouvel élément', description: '', price: '', imageUrl: '' });
+    return this.persist(id, content);
+  }
+
+  async removeItem(id: string, tenantId: string, sectionId: string, index: number) {
+    const website = await this.owned(id, tenantId);
+    const content = this.content(website);
+    const section = content.sections.find((s) => s.id === sectionId);
+    if (!section || !Array.isArray(section.data.items)) throw new NotFoundException('Section/items not found');
+    if (index < 0 || index >= section.data.items.length) throw new BadRequestException('Invalid item index');
+    section.data.items.splice(index, 1);
+    return this.persist(id, content);
+  }
+
+  /** Add an empty image slot to a gallery section. */
+  async addGalleryImage(id: string, tenantId: string, sectionId: string) {
+    const website = await this.owned(id, tenantId);
+    const content = this.content(website);
+    const section = content.sections.find((s) => s.id === sectionId);
+    if (!section) throw new NotFoundException('Section not found');
+    if (!Array.isArray(section.data.images)) section.data.images = [];
+    section.data.images.push('');
+    return this.persist(id, content);
+  }
+
+  async toggleSection(id: string, tenantId: string, sectionId: string, visible: boolean) {
+    const website = await this.owned(id, tenantId);
+    const content = this.content(website);
+    const section = content.sections.find((s) => s.id === sectionId);
+    if (!section) throw new NotFoundException('Section not found');
+    section.visible = visible;
+    return this.persist(id, content);
+  }
+
+  // ---------- regenerate ----------
+
+  async regenerateAll(id: string, tenantId: string) {
+    const website = await this.owned(id, tenantId);
+    const content = this.content(website);
+    const brand = await this.prisma.brand.findFirst({ where: { tenantId } });
+
+    let ai: any;
+    try {
+      ai = await this.aiEngineService.generateWebsiteContentJson({
+        businessName: website.businessName,
+        businessType: website.businessType,
+        description: website.description,
+        services: website.services,
+        targetAudience: brand?.targetAudience || undefined,
+        tone: brand?.tone || 'professional',
+        language: content.meta.language,
+      });
+    } catch (err: any) {
+      throw new BadRequestException(`Regeneration failed: ${err.message}`);
     }
 
-    // Return as-is
-    return { html: response, css: '' };
+    // Fresh copy, but preserve the user's theme, logo and contact choices.
+    const rebuilt = buildContent(
+      {
+        businessName: website.businessName,
+        businessType: website.businessType,
+        description: website.description,
+        services: website.services,
+        colors: {
+          primary: content.theme.primaryColor,
+          secondary: content.theme.secondaryColor,
+          accent: content.theme.accentColor,
+        },
+        fontFamily: content.theme.fontFamily,
+        template: content.theme.template,
+        language: content.meta.language,
+      },
+      ai,
+    );
+    rebuilt.logo = content.logo;
+    rebuilt.contact = content.contact;
+    return this.persist(id, rebuilt);
   }
 
-  private buildFallbackHtml(dto: WebsiteGenerationDto): { html: string; css: string } {
-    const primaryColor = dto.colors?.primary || '#3b82f6';
-    const accentColor = dto.colors?.accent || '#22c55e';
+  async regenerateSection(id: string, tenantId: string, sectionId: string) {
+    const website = await this.owned(id, tenantId);
+    const content = this.content(website);
+    const section = content.sections.find((s) => s.id === sectionId);
+    if (!section) throw new NotFoundException('Section not found');
 
-    const html = `<!DOCTYPE html>
-<html lang="fr">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${dto.businessName}</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
-  <style>
-    body { font-family: 'Inter', sans-serif; }
-    .gradient-bg { background: linear-gradient(135deg, ${primaryColor}15, ${accentColor}10); }
-    .hero-gradient { background: linear-gradient(135deg, ${primaryColor}, ${dto.colors?.secondary || '#1e3a8a'}); }
-    .btn-primary { background-color: ${primaryColor}; }
-    .btn-primary:hover { opacity: 0.9; }
-    .accent { color: ${accentColor}; }
-  </style>
-</head>
-<body class="bg-white text-gray-800">
+    try {
+      if (section.type === 'custom') {
+        const raw = await this.aiEngineService.generateSectionJson({
+          request: section.data.request || section.data.heading || 'section',
+          businessName: website.businessName,
+          businessType: website.businessType,
+          description: website.description,
+          language: content.meta.language,
+        });
+        const fresh = normalizeSection(raw);
+        if (fresh) section.data = { ...fresh.data, request: section.data.request };
+      } else {
+        // Re-run full generation and swap in the matching-type section's copy.
+        const ai = await this.aiEngineService.generateWebsiteContentJson({
+          businessName: website.businessName,
+          businessType: website.businessType,
+          description: website.description,
+          services: website.services,
+          language: content.meta.language,
+        });
+        const match = (ai?.sections || []).find((x: any) => x.type === section.type);
+        if (match?.data) {
+          const keepImages = this.pickImages(section.data);
+          section.data = { ...match.data, ...keepImages };
+        }
+      }
+    } catch (err: any) {
+      throw new BadRequestException(`Section regeneration failed: ${err.message}`);
+    }
+    return this.persist(id, content);
+  }
 
-  <!-- Navigation -->
-  <nav class="fixed top-0 left-0 right-0 z-50 bg-white/95 backdrop-blur-sm shadow-sm">
-    <div class="max-w-6xl mx-auto px-6 py-4 flex justify-between items-center">
-      <div class="text-2xl font-bold" style="color: ${primaryColor}">${dto.businessName}</div>
-      <div class="hidden md:flex gap-8 text-sm font-medium text-gray-600">
-        <a href="#services" class="hover:text-blue-600 transition">Services</a>
-        <a href="#about" class="hover:text-blue-600 transition">À propos</a>
-        <a href="#contact" class="hover:text-blue-600 transition">Contact</a>
-      </div>
-      <a href="#contact" class="btn-primary text-white px-5 py-2 rounded-full text-sm font-semibold transition">Nous contacter</a>
-    </div>
-  </nav>
+  private pickImages(data: Record<string, any>): Record<string, any> {
+    const out: Record<string, any> = {};
+    if (data.imageUrl) out.imageUrl = data.imageUrl;
+    if (Array.isArray(data.images)) out.images = data.images;
+    return out;
+  }
 
-  <!-- Hero -->
-  <section class="hero-gradient min-h-screen flex items-center justify-center text-white pt-20">
-    <div class="max-w-4xl mx-auto px-6 text-center">
-      <h1 class="text-5xl md:text-7xl font-bold mb-6 leading-tight">${dto.businessName}</h1>
-      <p class="text-xl md:text-2xl text-white/80 mb-4 font-light">${dto.businessType}</p>
-      <p class="text-lg text-white/70 mb-10 max-w-2xl mx-auto">${dto.description}</p>
-      <div class="flex flex-col sm:flex-row gap-4 justify-center">
-        <a href="#contact" class="bg-white px-8 py-4 rounded-full font-semibold transition hover:shadow-xl" style="color: ${primaryColor}">Nous contacter</a>
-        <a href="#services" class="border-2 border-white/50 text-white px-8 py-4 rounded-full font-semibold hover:bg-white/10 transition">Découvrir nos services</a>
-      </div>
-    </div>
-  </section>
+  // ---------- publish (LAST step) ----------
 
-  <!-- Services -->
-  <section id="services" class="py-24 gradient-bg">
-    <div class="max-w-6xl mx-auto px-6">
-      <div class="text-center mb-16">
-        <h2 class="text-4xl font-bold text-gray-900 mb-4">Nos Services</h2>
-        <p class="text-gray-500 text-lg max-w-2xl mx-auto">Des solutions adaptées à tous vos besoins</p>
-      </div>
-      <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
-        ${(dto.services && dto.services.length > 0 ? dto.services : ['Service Premium', 'Support Expert', 'Solutions Sur Mesure']).map((service, i) => `
-        <div class="bg-white rounded-2xl p-8 shadow-lg hover:shadow-xl transition-all duration-300 hover:-translate-y-1">
-          <div class="w-14 h-14 rounded-2xl flex items-center justify-center mb-6 text-2xl" style="background: ${primaryColor}20">
-            ${['⭐', '🚀', '💡', '🎯', '🔑', '✅'][i % 6]}
-          </div>
-          <h3 class="text-xl font-semibold text-gray-900 mb-3">${service}</h3>
-          <p class="text-gray-500 leading-relaxed">Une approche professionnelle et personnalisée pour répondre à vos attentes.</p>
-        </div>`).join('')}
-      </div>
-    </div>
-  </section>
+  async publishWebsite(id: string, tenantId: string) {
+    const website = await this.owned(id, tenantId);
 
-  <!-- About -->
-  <section id="about" class="py-24 bg-white">
-    <div class="max-w-6xl mx-auto px-6">
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-16 items-center">
-        <div>
-          <h2 class="text-4xl font-bold text-gray-900 mb-6">À propos de nous</h2>
-          <p class="text-gray-500 text-lg leading-relaxed mb-8">${dto.description}</p>
-          <div class="grid grid-cols-2 gap-6">
-            <div class="text-center p-6 rounded-2xl" style="background: ${primaryColor}10">
-              <div class="text-3xl font-bold mb-2" style="color: ${primaryColor}">10+</div>
-              <div class="text-gray-500 text-sm">Ans d'expérience</div>
-            </div>
-            <div class="text-center p-6 rounded-2xl" style="background: ${accentColor}10">
-              <div class="text-3xl font-bold mb-2" style="color: ${accentColor}">500+</div>
-              <div class="text-gray-500 text-sm">Clients satisfaits</div>
-            </div>
-          </div>
-        </div>
-        <div class="rounded-3xl overflow-hidden h-80 flex items-center justify-center" style="background: linear-gradient(135deg, ${primaryColor}20, ${accentColor}20)">
-          <div class="text-center p-8">
-            <div class="text-6xl mb-4">🏢</div>
-            <div class="text-xl font-semibold text-gray-700">${dto.businessName}</div>
-            <div class="text-gray-500">${dto.businessType}</div>
-          </div>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- Contact -->
-  <section id="contact" class="py-24 hero-gradient text-white">
-    <div class="max-w-4xl mx-auto px-6 text-center">
-      <h2 class="text-4xl font-bold mb-6">Contactez-nous</h2>
-      <p class="text-white/70 text-lg mb-12">Nous sommes à votre disposition pour répondre à toutes vos questions</p>
-      <div class="grid grid-cols-1 md:grid-cols-3 gap-8 mb-12">
-        ${dto.contactInfo?.phone ? `<div class="bg-white/10 backdrop-blur rounded-2xl p-6"><div class="text-3xl mb-3">📞</div><div class="font-semibold mb-1">Téléphone</div><div class="text-white/70">${dto.contactInfo.phone}</div></div>` : ''}
-        ${dto.contactInfo?.email ? `<div class="bg-white/10 backdrop-blur rounded-2xl p-6"><div class="text-3xl mb-3">📧</div><div class="font-semibold mb-1">Email</div><div class="text-white/70">${dto.contactInfo.email}</div></div>` : ''}
-        ${dto.contactInfo?.address ? `<div class="bg-white/10 backdrop-blur rounded-2xl p-6"><div class="text-3xl mb-3">📍</div><div class="font-semibold mb-1">Adresse</div><div class="text-white/70">${dto.contactInfo.address}</div></div>` : ''}
-      </div>
-    </div>
-  </section>
-
-  <!-- Footer -->
-  <footer class="bg-gray-900 text-white py-12">
-    <div class="max-w-6xl mx-auto px-6 text-center">
-      <div class="text-2xl font-bold mb-4" style="color: ${primaryColor}">${dto.businessName}</div>
-      <p class="text-gray-400 mb-6">${dto.description.substring(0, 100)}...</p>
-      <div class="border-t border-gray-800 pt-6 text-gray-500 text-sm">
-        © ${new Date().getFullYear()} ${dto.businessName}. Tous droits réservés. Propulsé par NextGen MarketingAI.
-      </div>
-    </div>
-  </footer>
-
-  <script>
-    // Smooth scrolling
-    document.querySelectorAll('a[href^="#"]').forEach(anchor => {
-      anchor.addEventListener('click', function(e) {
-        e.preventDefault();
-        document.querySelector(this.getAttribute('href'))?.scrollIntoView({ behavior: 'smooth' });
-      });
+    // One deployed site per tenant. A different already-published site blocks it
+    // (the same site can always be re-published/updated freely).
+    const otherPublished = await this.prisma.website.findFirst({
+      where: { tenantId, status: 'PUBLISHED', NOT: { id } },
     });
-  </script>
-</body>
-</html>`;
+    if (otherPublished) {
+      throw new BadRequestException(
+        'Vous ne pouvez avoir qu’un seul site publié. Dépubliez votre site actuel avant d’en publier un autre.',
+      );
+    }
 
-    return { html, css: '' };
+    const content = this.content(website);
+    const deployHtml = this.renderer.renderForDeploy(content);
+
+    this.logger.log(`Publishing website ${id} to Vercel...`);
+    try {
+      const result = await this.vercelDeploymentService.deployWebsite(
+        website.subdomain,
+        deployHtml,
+        '',
+        website.businessName,
+      );
+      await this.prisma.website.update({
+        where: { id },
+        data: {
+          status: 'PUBLISHED',
+          publishedAt: new Date(),
+          vercelProjectId: result.projectId,
+          vercelDeploymentId: result.deploymentId,
+          vercelUrl: result.url,
+          deploymentStatus: result.status,
+        } as any,
+      });
+      return {
+        publishedUrl: result.url,
+        deploymentId: result.deploymentId,
+        status: result.status,
+      };
+    } catch (error: any) {
+      this.logger.error(`Vercel deployment failed: ${error.message}`);
+      throw new BadRequestException(`Deployment failed: ${error.message}`);
+    }
+  }
+
+  async getDeploymentStatus(id: string, tenantId: string) {
+    const website = await this.owned(id, tenantId);
+    const deploymentId = (website as any).vercelDeploymentId;
+    if (!deploymentId) return { status: (website as any).deploymentStatus || 'NONE' };
+
+    const status = await this.vercelDeploymentService.getDeploymentStatus(deploymentId);
+    if (status.status === 'READY' && status.url) {
+      await this.prisma.website.update({
+        where: { id },
+        data: { vercelUrl: status.url, deploymentStatus: 'READY' } as any,
+      });
+    }
+    return status;
+  }
+
+  // ---------- helpers ----------
+
+  private async owned(id: string, tenantId: string) {
+    const website = await this.prisma.website.findUnique({ where: { id } });
+    if (!website) throw new NotFoundException('Website not found');
+    if (website.tenantId !== tenantId) throw new ForbiddenException('Not your website');
+    return website;
+  }
+
+  private content(website: any): WebsiteContent {
+    if (website.content) return website.content as WebsiteContent;
+    // Legacy rows created before the structured model: rebuild minimally.
+    return buildContent({
+      businessName: website.businessName,
+      businessType: website.businessType,
+      description: website.description,
+      services: website.services,
+      colors: {
+        primary: website.primaryColor,
+        secondary: website.secondaryColor,
+        accent: website.accentColor,
+      },
+      contact: {
+        phone: website.contactPhone,
+        email: website.contactEmail,
+        address: website.contactAddress,
+      },
+    });
+  }
+
+  /** Re-render and save content + html (+ optional column mirrors). */
+  private async persist(
+    id: string,
+    content: WebsiteContent,
+    columns: Record<string, any> = {},
+  ) {
+    const html = this.renderer.render(content);
+    const website = await this.prisma.website.update({
+      where: { id },
+      data: {
+        content: content as any,
+        html,
+        logoUrl: content.logo.type === 'image' ? content.logo.imageUrl : null,
+        logoText: content.logo.text,
+        ...columns,
+      },
+    });
+    return this.toResponse(website);
+  }
+
+  /**
+   * Turn a pasted Google Maps URL into an embeddable location. Short links
+   * (maps.app.goo.gl / goo.gl/maps) are expanded first, then coordinates are
+   * extracted from the URL; falls back to the place name if no coords found.
+   */
+  private async resolveMapFromUrl(url: string): Promise<{ mapQuery?: string; address?: string }> {
+    let full = (url || '').trim();
+    if (!full) return {};
+    if (/(maps\.app\.goo\.gl|goo\.gl\/maps|g\.co\/kgs)/.test(full)) {
+      full = await this.expandUrl(full);
+    }
+    const coords = this.extractCoords(full);
+    const address = this.extractPlaceName(full);
+    if (coords) return { mapQuery: coords, address };
+    if (address) return { mapQuery: address, address };
+    return {};
+  }
+
+  private async expandUrl(url: string): Promise<string> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    try {
+      const res = await fetch(url, { redirect: 'follow', signal: controller.signal });
+      return res.url || url;
+    } catch {
+      return url;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private extractCoords(u: string): string | undefined {
+    let m = u.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
+    if (m) return `${m[1]},${m[2]}`;
+    m = u.match(/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/);
+    if (m) return `${m[1]},${m[2]}`;
+    m = u.match(/[?&](?:q|query|ll|center|destination)=(-?\d+\.\d+)(?:,|%2C)(-?\d+\.\d+)/i);
+    if (m) return `${m[1]},${m[2]}`;
+    return undefined;
+  }
+
+  private extractPlaceName(u: string): string | undefined {
+    const m = u.match(/\/place\/([^/@]+)/);
+    if (m) {
+      try {
+        return decodeURIComponent(m[1].replace(/\+/g, ' '));
+      } catch {
+        return undefined;
+      }
+    }
+    return undefined;
   }
 
   private generateSubdomain(businessName: string): string {
@@ -293,115 +721,34 @@ INSTRUCTIONS STRICTES:
       .replace(/[^a-z0-9]/g, '-')
       .replace(/-+/g, '-')
       .replace(/^-|-$/g, '');
-    const randomSuffix = Math.random().toString(36).substring(2, 6);
-    return `${normalized}-${randomSuffix}`;
+    const suffix = Math.random().toString(36).substring(2, 6);
+    return `${normalized || 'site'}-${suffix}`;
   }
 
-  async getWebsite(id: string): Promise<GeneratedWebsite | null> {
-    const website = await this.prisma.website.findUnique({ where: { id } });
-    if (!website) return null;
+  private toResponse(w: any) {
     return {
-      id: website.id,
-      subdomain: website.subdomain,
-      html: website.html,
-      css: website.css,
-      previewUrl: (website as any).vercelUrl || `https://${website.subdomain}.vercel.app`,
-      publishedAt: website.publishedAt || undefined,
-      vercelUrl: (website as any).vercelUrl || undefined,
-      deploymentStatus: (website as any).deploymentStatus || 'NONE',
-    };
-  }
-
-  async getWebsiteBySubdomain(subdomain: string): Promise<GeneratedWebsite> {
-    const website = await this.prisma.website.findUnique({ where: { subdomain } });
-    if (!website || website.status !== 'PUBLISHED') {
-      throw new NotFoundException('Website not found or not published');
-    }
-    return {
-      id: website.id,
-      subdomain: website.subdomain,
-      html: website.html,
-      css: website.css,
-      previewUrl: (website as any).vercelUrl || `https://${website.subdomain}.vercel.app`,
-      publishedAt: website.publishedAt || undefined,
-      vercelUrl: (website as any).vercelUrl || undefined,
-    };
-  }
-
-  async listWebsites(tenantId: string): Promise<GeneratedWebsite[]> {
-    const websites = await this.prisma.website.findMany({
-      where: { tenantId },
-      orderBy: { createdAt: 'desc' },
-    });
-    return websites.map((w) => ({
       id: w.id,
       subdomain: w.subdomain,
+      status: w.status,
+      content: w.content,
       html: w.html,
-      css: w.css,
-      previewUrl: (w as any).vercelUrl || `https://${w.subdomain}.vercel.app`,
+      previewUrl: w.vercelUrl || `https://${w.subdomain}.vercel.app`,
+      vercelUrl: w.vercelUrl || undefined,
+      deploymentStatus: w.deploymentStatus || 'NONE',
       publishedAt: w.publishedAt || undefined,
-      vercelUrl: (w as any).vercelUrl || undefined,
-      deploymentStatus: (w as any).deploymentStatus || 'NONE',
-    }));
+    };
   }
 
-  async publishWebsite(id: string): Promise<{ publishedUrl: string; deploymentId?: string; status: string }> {
-    const website = await this.prisma.website.findUnique({ where: { id } });
-    if (!website) throw new NotFoundException('Website not found');
-
-    this.logger.log(`Publishing website ${id} to Vercel...`);
-
-    try {
-      const result = await this.vercelDeploymentService.deployWebsite(
-        website.subdomain,
-        website.html,
-        website.css,
-        website.businessName,
-      );
-
-      await this.prisma.website.update({
-        where: { id },
-        data: {
-          status: 'PUBLISHED',
-          publishedAt: new Date(),
-          ...(({ vercelProjectId: result.projectId, vercelDeploymentId: result.deploymentId, vercelUrl: result.url, deploymentStatus: result.status }) as any),
-        },
-      });
-
-      return {
-        publishedUrl: result.url,
-        deploymentId: result.deploymentId,
-        status: result.status,
-      };
-    } catch (error) {
-      this.logger.error(`Vercel deployment failed: ${error.message}`);
-      // Fallback: mark as published without real URL
-      await this.prisma.website.update({
-        where: { id },
-        data: { status: 'PUBLISHED', publishedAt: new Date() },
-      });
-      throw error;
-    }
-  }
-
-  async getDeploymentStatus(id: string): Promise<{ status: string; url?: string }> {
-    const website = await this.prisma.website.findUnique({ where: { id } });
-    if (!website) throw new NotFoundException('Website not found');
-
-    const deploymentId = (website as any).vercelDeploymentId;
-    if (!deploymentId) {
-      return { status: (website as any).deploymentStatus || 'NONE' };
-    }
-
-    const status = await this.vercelDeploymentService.getDeploymentStatus(deploymentId);
-
-    if (status.status === 'READY' && status.url) {
-      await this.prisma.website.update({
-        where: { id },
-        data: { ...(({ vercelUrl: status.url, deploymentStatus: 'READY' }) as any) },
-      });
-    }
-
-    return status;
+  private toSummary(w: any) {
+    return {
+      id: w.id,
+      subdomain: w.subdomain,
+      status: w.status,
+      businessName: w.businessName,
+      previewUrl: w.vercelUrl || `https://${w.subdomain}.vercel.app`,
+      vercelUrl: w.vercelUrl || undefined,
+      deploymentStatus: w.deploymentStatus || 'NONE',
+      updatedAt: w.updatedAt,
+    };
   }
 }

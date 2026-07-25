@@ -45,3 +45,5 @@ temp/
 
 # Debug
 node_modules/.cache/
+# Local uploaded / AI-generated images (runtime)
+storage/

@@ -3,6 +3,7 @@ import { ConfigModule } from '@nestjs/config';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { PrismaModule } from './common/prisma/prisma.module';
+import { StorageModule } from './common/storage/storage.module';
 import { SharedModule } from './shared/shared.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { TenantModule } from './modules/tenant/tenant.module';
@@ -24,11 +25,12 @@ import aiConfig from './config/ai.config';
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      envFilePath: '../.env',
+      envFilePath: ['.env', '../.env'],
       load: [appConfig, databaseConfig, jwtConfig, aiConfig],
     }),
     SharedModule,
     PrismaModule,
+    StorageModule,
     AuthModule,
     TenantModule,
     AiEngineModule,
