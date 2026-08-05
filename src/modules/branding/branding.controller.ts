@@ -5,6 +5,21 @@ import { GenerateBrandingDto, UpdateBrandingDto } from './branding.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { TenantGuard } from '../../common/guards/tenant.guard';
 
+interface AuthenticatedRequest {
+  user: {
+    sub: string;
+    email: string;
+    tenantId: string;
+    role: string;
+  };
+  tenant?: {
+    id: string;
+    name: string;
+    slug: string;
+    plan: string;
+  };
+}
+
 @ApiTags('Branding')
 @Controller('branding')
 @UseGuards(JwtAuthGuard, TenantGuard)
@@ -13,27 +28,27 @@ export class BrandingController {
   constructor(private readonly brandingService: BrandingService) {}
 
   @Post('generate')
-  async generate(@Body() dto: GenerateBrandingDto, @Request() req) {
-    return this.brandingService.generateBranding(req.user.userId, req.tenant.id, dto);
+  async generate(@Body() dto: GenerateBrandingDto, @Request() req: AuthenticatedRequest) {
+    return this.brandingService.generateBranding(req.user.sub, req.tenant.id, dto);
   }
 
   @Get()
-  async findAll(@Request() req) {
+  async findAll(@Request() req: AuthenticatedRequest) {
     return this.brandingService.findAll(req.tenant.id);
   }
 
   @Get(':id')
-  async findOne(@Param('id') id: string, @Request() req) {
+  async findOne(@Param('id') id: string, @Request() req: AuthenticatedRequest) {
     return this.brandingService.findOne(id, req.tenant.id);
   }
 
   @Put(':id')
-  async update(@Param('id') id: string, @Body() dto: UpdateBrandingDto, @Request() req) {
+  async update(@Param('id') id: string, @Body() dto: UpdateBrandingDto, @Request() req: AuthenticatedRequest) {
     return this.brandingService.update(id, req.tenant.id, dto);
   }
 
   @Delete(':id')
-  async remove(@Param('id') id: string, @Request() req) {
+  async remove(@Param('id') id: string, @Request() req: AuthenticatedRequest) {
     return this.brandingService.remove(id, req.tenant.id);
   }
 }

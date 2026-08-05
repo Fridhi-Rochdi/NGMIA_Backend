@@ -1,44 +1,22 @@
-import { IsString, IsOptional, IsEnum, IsNumber, Min, Max, IsBoolean } from 'class-validator';
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { Plan } from '@prisma/client';
+import { IsString, IsOptional, IsUrl, MaxLength } from 'class-validator';
+import { ApiPropertyOptional } from '@nestjs/swagger';
 
 export class UpdateTenantDto {
   @ApiPropertyOptional({ example: 'Mon Entreprise' })
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   name?: string;
 
   @ApiPropertyOptional({ example: 'https://logo.com/logo.png' })
   @IsOptional()
-  @IsString()
+  @IsUrl({ require_protocol: true })
+  @MaxLength(2048)
   logo?: string;
 
   @ApiPropertyOptional({ example: 'mon-entreprise.com' })
   @IsOptional()
   @IsString()
+  @MaxLength(253)
   domain?: string;
-
-  @ApiPropertyOptional({ enum: Plan, example: 'STARTER' })
-  @IsOptional()
-  @IsEnum(Plan)
-  plan?: Plan;
-
-  @ApiPropertyOptional({ example: 10 })
-  @IsOptional()
-  @IsNumber()
-  @Min(1)
-  @Max(100)
-  maxUsers?: number;
-
-  @ApiPropertyOptional({ example: 5 })
-  @IsOptional()
-  @IsNumber()
-  @Min(1)
-  @Max(50)
-  maxProjects?: number;
-
-  @ApiPropertyOptional({ example: true })
-  @IsOptional()
-  @IsBoolean()
-  isActive?: boolean;
 }

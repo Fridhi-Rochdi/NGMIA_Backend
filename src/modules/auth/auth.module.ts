@@ -1,22 +1,37 @@
 import { Module } from '@nestjs/common';
-import { JwtModule } from '@nestjs/jwt';
+import { JwtModule, JwtModuleOptions } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
 import { ConfigService } from '@nestjs/config';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { JwtStrategy } from './jwt.strategy';
 
+type JwtExpiresIn = NonNullable<
+  NonNullable<JwtModuleOptions['signOptions']>['expiresIn']
+>;
+
 @Module({
   imports: [
     PassportModule.register({ defaultStrategy: 'jwt' }),
     JwtModule.registerAsync({
       inject: [ConfigService],
-      useFactory: (configService: ConfigService) => ({
-        secret: configService.get<string>('JWT_SECRET', 'default-secret-change-me'),
-        signOptions: {
-          expiresIn: configService.get<string>('JWT_EXPIRES_IN', '24h'),
-        },
-      }),
+      useFactory: (configService: ConfigService): JwtModuleOptions => {
+        const configuredExpiration =
+          configService.get<string>('JWT_EXPIRATION') ?? '24h';
+
+        if (!/^\d+(ms|s|m|h|d|w|y)$/.test(configuredExpiration)) {
+          throw new Error(
+            'JWT_EXPIRATION must use a duration such as "15m", "24h" or "7d"',
+          );
+        }
+
+        return {
+          secret: configService.getOrThrow<string>('JWT_SECRET'),
+          signOptions: {
+            expiresIn: configuredExpiration as JwtExpiresIn,
+          },
+        };
+      },
     }),
   ],
   controllers: [AuthController],

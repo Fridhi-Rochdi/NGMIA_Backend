@@ -1,5 +1,8 @@
-import { Controller, Post, Body, Get, Query, Res, HttpStatus } from '@nestjs/common';
+import { Controller, Post, Body, Get, Query, Res, HttpStatus, UseGuards } from '@nestjs/common';
 import { Response } from 'express';
+import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { TenantGuard } from '../../common/guards/tenant.guard';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { QrCodeService } from './qr-code.service';
 import {
   GenerateQrCodeDto,
@@ -10,8 +13,14 @@ import {
 } from './qr-code.dto';
 
 @Controller('qr-code')
+@UseGuards(JwtAuthGuard, TenantGuard)
 export class QrCodeController {
   constructor(private readonly qrCodeService: QrCodeService) {}
+
+  @Get()
+  async getQrCodes(@CurrentUser('tenantId') tenantId: string) {
+    return this.qrCodeService.getQrCodes(tenantId);
+  }
 
   @Post('generate')
   async generateQrCode(@Body() dto: GenerateQrCodeDto) {

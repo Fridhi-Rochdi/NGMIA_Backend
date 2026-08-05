@@ -15,6 +15,21 @@ import { RegisterDto, LoginDto } from './auth.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { Public } from '../../common/decorators/public.decorator';
 
+interface AuthenticatedRequest {
+  user: {
+    sub: string;
+    email: string;
+    tenantId: string;
+    role: string;
+  };
+  tenant?: {
+    id: string;
+    name: string;
+    slug: string;
+    plan: string;
+  };
+}
+
 @ApiTags('Auth')
 @Controller('auth')
 export class AuthController {
@@ -45,7 +60,7 @@ export class AuthController {
   @ApiOperation({ summary: 'Récupérer le profil de l\'utilisateur connecté' })
   @ApiResponse({ status: 200, description: 'Profil utilisateur' })
   @ApiResponse({ status: 401, description: 'Non autorisé' })
-  async getProfile(@Request() req: any) {
+  async getProfile(@Request() req: AuthenticatedRequest) {
     return this.authService.validateUser(req.user.sub);
   }
 
@@ -55,7 +70,7 @@ export class AuthController {
   @ApiOperation({ summary: 'Mettre à jour le profil' })
   @ApiResponse({ status: 200, description: 'Profil mis à jour' })
   async updateProfile(
-    @Request() req: any,
+    @Request() req: AuthenticatedRequest,
     @Body() body: { firstName?: string; lastName?: string },
   ) {
     return this.authService.updateProfile(req.user.sub, body);
@@ -69,7 +84,7 @@ export class AuthController {
   @ApiResponse({ status: 200, description: 'Mot de passe mis à jour' })
   @ApiResponse({ status: 401, description: 'Mot de passe incorrect' })
   async changePassword(
-    @Request() req: any,
+    @Request() req: AuthenticatedRequest,
     @Body() body: { currentPassword: string; newPassword: string },
   ) {
     return this.authService.changePassword(req.user.sub, body);

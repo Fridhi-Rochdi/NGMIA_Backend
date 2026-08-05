@@ -1,7 +1,12 @@
 import { Injectable, UnauthorizedException, ConflictException, Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../../common/prisma/prisma.service';
-import { RegisterDto, LoginDto } from './auth.dto';
+import {
+  ChangePasswordDto,
+  LoginDto,
+  RegisterDto,
+  UpdateProfileDto,
+} from './auth.dto';
 import * as bcrypt from 'bcrypt';
 
 export interface JwtPayload {
@@ -288,7 +293,7 @@ export class AuthService {
     };
   }
 
-  async updateProfile(userId: string, dto: { firstName?: string; lastName?: string }) {
+  async updateProfile(userId: string, dto: UpdateProfileDto) {
     const user = await this.prisma.user.update({
       where: { id: userId },
       data: {
@@ -307,14 +312,14 @@ export class AuthService {
     };
   }
 
-  async changePassword(userId: string, dto: { currentPassword: string; newPassword: string }) {
+  async changePassword(userId: string, dto: ChangePasswordDto) {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user) throw new UnauthorizedException('User not found');
 
     const isValid = await bcrypt.compare(dto.currentPassword, user.password);
     if (!isValid) throw new UnauthorizedException('Current password is incorrect');
 
-    const hashed = await bcrypt.hash(dto.newPassword, 10);
+    const hashed = await bcrypt.hash(dto.newPassword, 12);
     await this.prisma.user.update({
       where: { id: userId },
       data: { password: hashed },

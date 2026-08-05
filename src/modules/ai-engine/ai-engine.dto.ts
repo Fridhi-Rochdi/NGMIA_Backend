@@ -1,4 +1,15 @@
-import { IsArray, IsEnum, IsOptional, IsString, ValidateNested } from 'class-validator';
+import {
+  ArrayMaxSize,
+  IsArray,
+  IsEnum,
+  IsInt,
+  IsOptional,
+  IsString,
+  Max,
+  MaxLength,
+  Min,
+  ValidateNested,
+} from 'class-validator';
 import { Type } from 'class-transformer';
 
 export enum MediaType {
@@ -84,29 +95,37 @@ export class MediaInput {
   type: MediaType;
 
   @IsString()
+  @MaxLength(2048)
   url: string;
 
   @IsString()
+  @MaxLength(1000)
   description: string;
 }
 
 export class TextContentInput {
   @IsString()
+  @MaxLength(200)
   title: string;
 
   @IsString()
+  @MaxLength(5000)
   body: string;
 
   @IsString()
+  @MaxLength(500)
   cta: string;
 
   @IsArray()
+  @ArrayMaxSize(30)
   @IsString({ each: true })
+  @MaxLength(100, { each: true })
   hashtags: string[];
 }
 
 export class GenerateReelsDto {
   @IsArray()
+  @ArrayMaxSize(30)
   @ValidateNested({ each: true })
   @Type(() => MediaInput)
   media: MediaInput[];
@@ -203,33 +222,106 @@ export interface VoiceoverSegment {
 // AI Engine Options Interfaces
 // ============================================
 
-export interface GenerateTextOptions {
+export class GenerateTextOptions {
+  @IsString()
+  @MaxLength(10000)
   prompt: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
   tone?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(20)
   length?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
   language?: string;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(8192)
+  maxTokens?: number;
 }
 
-export interface GenerateImageOptions {
+export class GenerateImageOptions {
+  @IsString()
+  @MaxLength(4000)
   prompt: string;
+
+  @IsOptional()
+  @IsEnum(['256x256', '512x512', '1024x1024'])
   size?: '256x256' | '512x512' | '1024x1024';
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
   style?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(20)
   aspectRatio?: string;
 }
 
-export interface GenerateBrandingOptions {
+export class GenerateBrandingOptions {
+  @IsString()
+  @MaxLength(200)
   brandName: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
   industry?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(4000)
   description?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
   style?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(20)
+  @IsString({ each: true })
+  @MaxLength(100, { each: true })
   values?: string[];
 }
 
-export interface GenerateSocialPostOptions {
+export class GenerateSocialPostOptions {
+  @IsString()
+  @MaxLength(2000)
   topic: string;
+
+  @IsString()
+  @MaxLength(50)
   platform: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
   tone?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(30)
+  @IsString({ each: true })
+  @MaxLength(100, { each: true })
   hashtags?: string[];
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
+  language?: string;
 }
 
 export interface VoiceoverScript {

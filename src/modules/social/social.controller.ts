@@ -10,6 +10,21 @@ import {
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { TenantGuard } from '../../common/guards/tenant.guard';
 
+interface AuthenticatedRequest {
+  user: {
+    sub: string;
+    email: string;
+    tenantId: string;
+    role: string;
+  };
+  tenant?: {
+    id: string;
+    name: string;
+    slug: string;
+    plan: string;
+  };
+}
+
 @ApiTags('Social')
 @Controller('social')
 @UseGuards(JwtAuthGuard, TenantGuard)
@@ -22,27 +37,27 @@ export class SocialController {
   // ============================================
 
   @Post('posts/generate')
-  async generatePost(@Body() dto: GenerateSocialPostDto, @Request() req) {
+  async generatePost(@Body() dto: GenerateSocialPostDto, @Request() req: AuthenticatedRequest) {
     return this.socialService.generatePost(req.user.sub, req.tenant.id, dto);
   }
 
   @Get('posts')
-  async findAllPosts(@Request() req) {
+  async findAllPosts(@Request() req: AuthenticatedRequest) {
     return this.socialService.findAllPosts(req.tenant.id);
   }
 
   @Get('posts/:id')
-  async findOnePost(@Param('id') id: string, @Request() req) {
+  async findOnePost(@Param('id') id: string, @Request() req: AuthenticatedRequest) {
     return this.socialService.findOnePost(id, req.tenant.id);
   }
 
   @Put('posts/:id')
-  async updatePost(@Param('id') id: string, @Body() dto: UpdateSocialPostDto, @Request() req) {
+  async updatePost(@Param('id') id: string, @Body() dto: UpdateSocialPostDto, @Request() req: AuthenticatedRequest) {
     return this.socialService.updatePost(id, req.tenant.id, dto);
   }
 
   @Delete('posts/:id')
-  async removePost(@Param('id') id: string, @Request() req) {
+  async removePost(@Param('id') id: string, @Request() req: AuthenticatedRequest) {
     return this.socialService.removePost(id, req.tenant.id);
   }
 
@@ -51,27 +66,27 @@ export class SocialController {
   // ============================================
 
   @Post('accounts')
-  async connectAccount(@Body() dto: ConnectSocialAccountDto, @Request() req) {
+  async connectAccount(@Body() dto: ConnectSocialAccountDto, @Request() req: AuthenticatedRequest) {
     return this.socialService.connectAccount(req.tenant.id, dto);
   }
 
   @Get('accounts')
-  async findAllAccounts(@Request() req) {
+  async findAllAccounts(@Request() req: AuthenticatedRequest) {
     return this.socialService.findAllAccounts(req.tenant.id);
   }
 
   @Get('accounts/:id')
-  async findOneAccount(@Param('id') id: string, @Request() req) {
+  async findOneAccount(@Param('id') id: string, @Request() req: AuthenticatedRequest) {
     return this.socialService.findOneAccount(id, req.tenant.id);
   }
 
   @Put('accounts/:id')
-  async updateAccount(@Param('id') id: string, @Body() dto: UpdateSocialAccountDto, @Request() req) {
+  async updateAccount(@Param('id') id: string, @Body() dto: UpdateSocialAccountDto, @Request() req: AuthenticatedRequest) {
     return this.socialService.updateAccount(id, req.tenant.id, dto);
   }
 
   @Delete('accounts/:id')
-  async disconnectAccount(@Param('id') id: string, @Request() req) {
+  async disconnectAccount(@Param('id') id: string, @Request() req: AuthenticatedRequest) {
     return this.socialService.disconnectAccount(id, req.tenant.id);
   }
 }

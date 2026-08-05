@@ -1,4 +1,5 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
+import { PrismaService } from '../../common/prisma/prisma.service';
 import * as QRCode from 'qrcode';
 
 export interface QrCodeOptions {
@@ -141,6 +142,68 @@ export class QrCodeService {
     return this.generateQrCode({
       content: wifiString,
       ...options,
+    });
+  }
+
+  // ==================== Database CRUD Methods ====================
+
+  constructor(private prisma: PrismaService) {}
+
+  async getQrCodes(tenantId: string) {
+    return this.prisma.qrCode.findMany({
+      where: { tenantId },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  async getQrCodeById(id: string, tenantId: string) {
+    const qrCode = await this.prisma.qrCode.findFirst({
+      where: { id, tenantId },
+    });
+
+    if (!qrCode) {
+      throw new NotFoundException('QR Code not found');
+    }
+
+    return qrCode;
+  }
+
+  async createQrCode(
+    data: {
+      name: string;
+      type: string;
+      data: string;
+      url: string;
+      size?: number;
+      color?: string;
+      bgColor?: string;
+      logo?: string;
+      format?: string;
+    },
+    tenantId: string,
+    userId: string,
+  ) {
+    return this.prisma.qrCode.create({
+      data: {
+        name: data.name,
+        type: data.type,
+        data: data.data,
+        url: data.url,
+        size: data.size || 300,
+        color: data.color || '#000000',
+        bgColor: data.bgColor || '#ffffff',
+        logo: data.logo,
+        format: data.format || 'png',
+        tenant: { connect: { id: tenantId } },
+        user: { connect: { id: userId } },
+      },
+    });
+  }
+
+  async deleteQrCode(id: string, tenantId: string) {
+    const existing = await this.getQrCodeById(id, tenantId);
+    return this.prisma.qrCode.delete({
+      where: { id: existing.id },
     });
   }
 }

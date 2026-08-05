@@ -31,6 +31,8 @@ model Tenant {
   calendars   Calendar[]
   socialAccounts SocialAccount[]
   websites    Website[]
+  menus       Menu[]
+  posters     Poster[]
   qrCodes     QrCode[]
   subscription Subscription?
   paymentMethods PaymentMethod[]
@@ -58,6 +60,8 @@ model User {
   images        Image[]
   calendars     Calendar[]
   websites      Website[]
+  menus         Menu[]
+  posters       Poster[]
   qrCodes       QrCode[]
 
   @@unique([email, tenantId])
@@ -125,18 +129,27 @@ model Content {
 // ============================================
 
 model Image {
-  id          String     @id @default(uuid())
-  prompt      String
-  url         String
-  thumbnailUrl String?
-  width       Int?
-  height      Int?
-  style       String     @default("realistic")
-  format      String     @default("png")
-  aiModel     String     @default("dall-e-simulated")
-  status      ImageStatus @default(PENDING)
-  createdAt   DateTime   @default(now())
-  updatedAt   DateTime   @updatedAt
+  id            String      @id @default(uuid())
+  prompt        String
+  businessName  String?
+  businessType  String?
+  description   String?
+  template      String      @default("modern")
+  primaryColor  String      @default("#3b82f6")
+  secondaryColor String     @default("#1e3a8a")
+  accentColor   String      @default("#22c55e")
+  fontFamily    String      @default("Inter")
+  enhancedPrompt String?    @db.Text
+  url           String
+  thumbnailUrl  String?
+  width         Int?
+  height        Int?
+  style         String      @default("realistic")
+  format        String      @default("png")
+  aiModel       String      @default("dall-e-simulated")
+  status        ImageStatus @default(PENDING)
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
 
   tenantId    String
   tenant      Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -251,6 +264,81 @@ model Website {
   user         User           @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("websites")
+}
+
+// ============================================
+// Menu Module
+// ============================================
+
+model Menu {
+  id           String      @id @default(uuid())
+  name         String
+  businessName String
+  businessType String      // RESTAURANT, CAFE, BAR, BAKERY, etc.
+  description  String?
+  categories   Json        // Array of categories with items
+  template     String      @default("modern")
+  primaryColor String      @default("#3b82f6")
+  secondaryColor String    @default("#1e3a8a")
+  accentColor  String      @default("#22c55e")
+  fontFamily   String      @default("Inter")
+  fontSizes    Json?
+  html         String      @db.Text
+  css          String      @db.Text
+  imageUrl     String?     // Generated PNG image URL
+  thumbnailUrl String?
+  status       MenuStatus  @default(DRAFT)
+  slug         String      @unique
+  publishedAt  DateTime?
+  vercelUrl    String?     // Deployed URL for online menu
+  qrCodeUrl    String?     // QR code URL pointing to deployed menu
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  tenantId     String
+  tenant       Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userId       String
+  user         User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("menus")
+}
+
+// ============================================
+// Poster Module
+// ============================================
+
+model Poster {
+  id           String        @id @default(uuid())
+  name         String
+  businessName String
+  businessType String        // RESTAURANT, RETAIL, EVENT, PROMOTION, etc.
+  title        String
+  description  String?
+  sections     Json?
+  template     String        @default("modern")
+  primaryColor String        @default("#3b82f6")
+  secondaryColor String     @default("#1e3a8a")
+  accentColor  String        @default("#22c55e")
+  fontFamily   String        @default("Inter")
+  fontSizes    Json?
+  content      String        @db.Text  // HTML/CSS content
+  imageUrl     String?       // Generated PNG image URL
+  thumbnailUrl String?
+  size         String        @default("A4")  // A4, A3, SOCIAL_MEDIA, STORY
+  status       PosterStatus  @default(DRAFT)
+  slug         String        @unique
+  publishedAt  DateTime?
+  vercelUrl    String?       // Deployed URL for online poster
+  qrCodeUrl    String?       // QR code URL pointing to deployed poster
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  tenantId     String
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userId       String
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("posters")
 }
 
 
@@ -436,6 +524,18 @@ enum InvoiceStatus {
 }
 
 enum WebsiteStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum MenuStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum PosterStatus {
   DRAFT
   PUBLISHED
   ARCHIVED

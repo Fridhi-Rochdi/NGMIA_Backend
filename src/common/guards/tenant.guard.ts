@@ -1,6 +1,7 @@
 import { Injectable, CanActivate, ExecutionContext, ForbiddenException } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { Plan } from '@prisma/client';
+import { IS_PUBLIC_KEY } from '../decorators/public.decorator';
 
 export const MINIMUM_PLAN_KEY = 'minimumPlan';
 
@@ -25,15 +26,27 @@ export class TenantGuard implements CanActivate {
   canActivate(context: ExecutionContext): boolean {
     const request = context.switchToHttp().getRequest();
     const tenant = request.tenant;
+    const user = request.user;
+
+    const isPublic = this.reflector.getAllAndOverride<boolean>(IS_PUBLIC_KEY, [
+      context.getHandler(),
+      context.getClass(),
+    ]);
+    if (isPublic) {
+      return true;
+    }
 
     if (!tenant) {
       throw new ForbiddenException('Tenant requis pour accéder à cette ressource');
     }
 
-    // Check plan requirements
-    const requiredPlan = this.reflector.get<Plan>(
+    if (!user?.tenantId || user.tenantId !== tenant.id) {
+      throw new ForbiddenException('Tenant access denied');
+    }
+
+    const requiredPlan = this.reflector.getAllAndOverride<Plan>(
       MINIMUM_PLAN_KEY,
-      context.getHandler(),
+      [context.getHandler(), context.getClass()],
     );
 
     if (requiredPlan) {

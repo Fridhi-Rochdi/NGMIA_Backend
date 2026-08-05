@@ -1,5 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
-import { StorageService } from '../../common/storage/storage.service';
+import { Injectable } from '@nestjs/common';
 import {
   GenerateReelsDto,
   GenerateReelsResponse,
@@ -17,20 +16,8 @@ import {
   TransitionType,
 } from './ai-engine.dto';
 
-const LANG_NAMES: Record<string, string> = {
-  fr: 'French',
-  en: 'English',
-  es: 'Spanish',
-  ar: 'Arabic',
-  de: 'German',
-};
-
 @Injectable()
 export class AiEngineService {
-  private readonly logger = new Logger(AiEngineService.name);
-
-  constructor(private readonly storage: StorageService) {}
-
   async generateText(options: GenerateTextOptions): Promise<string> {
     const { prompt, tone = 'professional', length = 'MEDIUM' } = options;
     const apiKey = process.env.NVIDIA_NIM_API_KEY;
@@ -164,263 +151,78 @@ STRICT RULES:
     return data.choices[0].message.content.trim();
   }
 
-  /**
-   * Real text-to-image via NVIDIA NIM, with a graceful fallback.
-   * Generation is a best-effort enhancement: if the image API is unavailable
-   * or returns an unexpected shape, we return a branded SVG placeholder so the
-   * calling flow (website generation, images module) never breaks.
-   *
-   * `scope` groups saved files (e.g. per website id); returns a public URL.
-   */
-  async generateImage(
-    options: GenerateImageOptions & { scope?: string },
-  ): Promise<string> {
-    const { prompt, size = '1024x1024', scope = 'images' } = options as any;
+  async generateImage(options: GenerateImageOptions): Promise<string> {
+    const { prompt, size = '512x512' } = options;
     const apiKey = process.env.NVIDIA_NIM_API_KEY;
 
-    // Image generation is off by default: this key exposes no text-to-image
-    // model, so calling the endpoint just hangs. Enable with AI_IMAGE_ENABLED=true
-    // once a working image model/provider is configured.
-    if (apiKey && process.env.AI_IMAGE_ENABLED === 'true') {
-      try {
-        const base64 = await this.callNvidiaImage(prompt, size, apiKey);
-        if (base64) return this.storage.saveBase64(scope, base64, this.imageExt(base64));
-      } catch (err: any) {
-        this.logger.warn(`Image generation failed, using placeholder: ${err.message}`);
+    if (!apiKey) {
+      console.error('[AiEngine] NVIDIA_NIM_API_KEY is not set');
+      throw new Error('AI Engine is not configured correctly. Missing API Key.');
+    }
+
+    // Parse size to width/height for FLUX API
+    const [width, height] = size.split('x').map(Number);
+    const validWidths = [1024, 768, 1344, 896, 1152, 832];
+    const validHeights = [1024, 1344, 768, 1152, 896, 1216, 832];
+    const finalWidth = validWidths.includes(width) ? width : 1024;
+    const finalHeight = validHeights.includes(height) ? height : 1024;
+
+    console.log('[AiEngine] generateImage() called');
+    console.log('[AiEngine] Prompt:', prompt);
+    console.log('[AiEngine] Size:', size, '->', finalWidth, 'x', finalHeight);
+
+    try {
+      // Use NVIDIA FLUX.1-schnell model for image generation
+      // Endpoint: https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.1-schnell
+      const invokeUrl = 'https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.1-schnell';
+
+      console.log('[AiEngine] Calling NVIDIA FLUX API:', invokeUrl);
+
+      const response = await fetch(invokeUrl, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
+        body: JSON.stringify({
+          prompt: prompt,
+          width: finalWidth,
+          height: finalHeight,
+          steps: 4, // FLUX.1-schnell is optimized for 1-4 steps
+          seed: Math.floor(Math.random() * 2147483647),
+        }),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('[AiEngine] NVIDIA Image API Error:', response.status, errorText);
+        // Return placeholder on error
+        return `https://placehold.co/${size}/6366F1/FFFFFF?text=Image+Generation+Failed`;
       }
-    }
-    // Deterministic, on-brand SVG placeholder (data URI) — instant, always works.
-    return this.placeholderImage(prompt, size);
-  }
 
-  /** Detect image format from a base64 payload's magic prefix. */
-  private imageExt(base64: string): string {
-    const b = base64.replace(/^data:image\/\w+;base64,/, '');
-    if (b.startsWith('/9j/')) return 'jpg';
-    if (b.startsWith('iVBOR')) return 'png';
-    if (b.startsWith('UklGR')) return 'webp';
-    if (b.startsWith('R0lGOD')) return 'gif';
-    return 'png';
-  }
+      const data = await response.json();
+      console.log('[AiEngine] Image generation response:', JSON.stringify(data).substring(0, 200));
 
-  /** fetch() with an AbortController timeout so a dead endpoint fails fast. */
-  private async fetchWithTimeout(url: string, options: any, ms: number): Promise<Response> {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), ms);
-    try {
-      return await fetch(url, { ...options, signal: controller.signal });
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
-  private async callNvidiaImage(
-    prompt: string,
-    size: string,
-    apiKey: string,
-  ): Promise<string | null> {
-    const baseUrl = process.env.NVIDIA_NIM_IMAGE_BASE_URL || 'https://ai.api.nvidia.com/v1/genai';
-    const model = process.env.NVIDIA_NIM_IMAGE_MODEL || 'black-forest-labs/flux.1-schnell';
-    const [w, h] = size.split('x').map((n) => parseInt(n, 10) || 1024);
-
-    const res = await this.fetchWithTimeout(`${baseUrl}/${model}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-        Accept: 'application/json',
-      },
-      body: JSON.stringify({
-        prompt,
-        mode: 'base',
-        samples: 1,
-        width: w,
-        height: h,
-        steps: 30,
-        cfg_scale: 3.5,
-        seed: 0,
-      }),
-    }, 30000);
-
-    if (!res.ok) {
-      throw new Error(`NVIDIA image API ${res.status}: ${(await res.text()).slice(0, 200)}`);
-    }
-    const data: any = await res.json();
-    // Handle the common response shapes across NVIDIA image models.
-    return (
-      data?.artifacts?.[0]?.base64 ||
-      data?.image ||
-      data?.b64_json ||
-      data?.data?.[0]?.b64_json ||
-      null
-    );
-  }
-
-  private placeholderImage(prompt: string, size: string): string {
-    const [w, h] = size.split('x').map((n) => parseInt(n, 10) || 1024);
-    const label = (prompt || 'Image').slice(0, 40);
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">
-  <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
-    <stop offset="0" stop-color="#6366f1"/><stop offset="1" stop-color="#ec4899"/>
-  </linearGradient></defs>
-  <rect width="100%" height="100%" fill="url(#g)"/>
-  <text x="50%" y="50%" fill="#ffffff" font-family="Inter,sans-serif" font-size="${Math.round(w / 22)}"
-    font-weight="600" text-anchor="middle" dominant-baseline="middle" opacity="0.85">${this.escapeXml(label)}</text>
-</svg>`;
-    return `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
-  }
-
-  private escapeXml(s: string): string {
-    return s.replace(/[<>&'"]/g, (c) =>
-      ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;' })[c] as string,
-    );
-  }
-
-  // ============================================================
-  // Structured website content generation (JSON, not raw HTML)
-  // ============================================================
-
-  /** Ask the LLM for the full structured content of a website as JSON. */
-  async generateWebsiteContentJson(input: {
-    businessName: string;
-    businessType: string;
-    description: string;
-    services?: string[];
-    targetAudience?: string;
-    tone?: string;
-    language?: string;
-    context?: string;
-    sections?: string[];
-  }): Promise<any> {
-    const lang = input.language || 'fr';
-    const wanted =
-      input.sections?.length
-        ? input.sections.join(', ')
-        : 'hero, about, services, testimonials, faq, cta, contact';
-
-    const langName = LANG_NAMES[lang] || 'French';
-    const system = `You are a senior conversion copywriter and web designer. Output ONLY valid minified JSON (no markdown, no commentary).
-Write ALL user-facing text in ${langName}, in a "${input.tone || 'professional'}" tone.
-Return {"meta":{"title":string,"description":string},"sections":[...]} using ONLY these section shapes:
-{"type":"hero","data":{"eyebrow":string,"title":string,"subtitle":string,"ctaLabel":string,"imagePrompt":string}}
-{"type":"about","data":{"title":string,"body":string,"imagePrompt":string,"stats":[{"value":string,"label":string}]}}
-{"type":"services","data":{"title":string,"subtitle":string,"items":[{"name":string,"description":string,"icon":string}]}}
-{"type":"testimonials","data":{"title":string,"items":[{"quote":string,"author":string,"role":string}]}}
-{"type":"faq","data":{"title":string,"items":[{"question":string,"answer":string}]}}
-{"type":"cta","data":{"title":string,"subtitle":string,"buttonLabel":string}}
-{"type":"contact","data":{"title":string,"subtitle":string}}
-RULES:
-- Include ONLY these sections, in EXACTLY this order: ${wanted}.
-- REFORMULATE the provided description in your own words — NEVER output the given description text verbatim anywhere. about.body must be a fresh 2-4 sentence rewrite.
-- Deeply tailor everything to the exact business type and the extra context (e.g. a small coffee shop vs a fine-dining restaurant read very differently).
-- hero.title = a punchy 4-8 word headline (NOT the description). hero.eyebrow = a 2-3 word tagline. hero.subtitle = ONE short value-proposition sentence.
-- services: 3 to 6 items. testimonials: exactly 3. faq: 4 to 6 entries. about.stats: exactly 3.
-- "icon" = ONE name from this EXACT list (never an emoji): coffee, utensils, star, heart, shield, truck, clock, gift, users, sparkles, tag, wifi, leaf, home, camera, bolt, award, check. Pick the most relevant.
-- "imagePrompt" = a DETAILED English photo prompt specific to THIS business (subject, setting, lighting, "realistic, high quality, professional photography").`;
-
-    const user = `Entreprise: ${input.businessName}
-Type précis: ${input.businessType}
-Description (à REFORMULER, ne jamais copier telle quelle): ${input.description}
-${input.context ? `Contexte / détails supplémentaires: ${input.context}` : ''}
-${input.services?.length ? `Services: ${input.services.join(', ')}` : ''}
-${input.targetAudience ? `Public cible: ${input.targetAudience}` : ''}
-Génère le contenu complet du site, parfaitement adapté à ce type d'entreprise et à son contexte.`;
-
-    const raw = await this.llmChat(system, user, 3000, 0.6, true);
-    return this.extractJson(raw);
-  }
-
-  /** Ask the LLM to produce ONE new section from a free-form user request. */
-  async generateSectionJson(input: {
-    request: string;
-    businessName: string;
-    businessType: string;
-    description: string;
-    tone?: string;
-    language?: string;
-  }): Promise<any> {
-    const lang = input.language || 'fr';
-    const langName = LANG_NAMES[lang] || 'French';
-    const system = `You are an expert web copywriter. Output ONLY valid minified JSON, no markdown.
-Write all text in ${langName} in a "${input.tone || 'professional'}" tone.
-The user describes a section to add to a static showcase website. Produce ONE section as:
-{"type":"custom","data":{"heading":string,"subheading":string,"body":string,"imagePrompt":string|null,"items":[{"name":string,"description":string}]}}
-Use "items" only if the request implies a list (features, steps, FAQ...), otherwise return an empty array.
-The section is STATIC (no working forms/backends). If asked for a form, render its visual only.`;
-
-    const user = `Entreprise: ${input.businessName} (${input.businessType}). ${input.description}
-Section demandée: "${input.request}"`;
-
-    const raw = await this.llmChat(system, user, 1200, 0.6, true);
-    return this.extractJson(raw);
-  }
-
-  /**
-   * Translate a free-text design instruction into a small theme patch.
-   * Only visual theme keys change — content is untouched (no regeneration).
-   */
-  async generateThemePatch(instruction: string, theme: any): Promise<any> {
-    const system = `You adjust a website's VISUAL theme only. Output ONLY minified JSON containing ONLY the keys the user wants changed, from this exact set and allowed values:
-{"radius":"none|small|medium|large|full","buttonStyle":"pill|rounded|square","animations":true|false,"density":"compact|normal|spacious","fontFamily":"Inter|Poppins|Montserrat|Playfair Display|Roboto|Lora","primaryColor":"#RRGGBB","secondaryColor":"#RRGGBB","accentColor":"#RRGGBB","template":"modern|classic|minimal|bold"}
-Current theme: ${JSON.stringify(theme)}. Do not invent other keys. Colors must be hex.`;
-    const raw = await this.llmChat(system, instruction, 300, 0.3, true);
-    return this.extractJson(raw);
-  }
-
-  /** Low-level chat completion against NVIDIA NIM. */
-  private async llmChat(
-    system: string,
-    user: string,
-    maxTokens: number,
-    temperature = 0.7,
-    json = false,
-  ): Promise<string> {
-    const apiKey = process.env.NVIDIA_NIM_API_KEY;
-    const baseUrl = process.env.NVIDIA_NIM_BASE_URL || 'https://integrate.api.nvidia.com/v1';
-    const model = process.env.NVIDIA_NIM_TEXT_MODEL || 'meta/llama-3.1-70b-instruct';
-    if (!apiKey) throw new Error('AI Engine is not configured. Missing NVIDIA_NIM_API_KEY.');
-
-    const res = await this.fetchWithTimeout(`${baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-        Accept: 'application/json',
-      },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: 'system', content: system },
-          { role: 'user', content: user },
-        ],
-        temperature,
-        max_tokens: maxTokens,
-        top_p: 1,
-        // Force valid JSON output for structured calls (fixes malformed JSON).
-        ...(json ? { response_format: { type: 'json_object' } } : {}),
-      }),
-    }, 90000);
-    if (!res.ok) {
-      throw new Error(`NVIDIA text API ${res.status}: ${(await res.text()).slice(0, 200)}`);
-    }
-    const data: any = await res.json();
-    return data.choices?.[0]?.message?.content?.trim() || '';
-  }
-
-  /** Robustly extract a JSON object from an LLM response (strips fences/prose). */
-  private extractJson(raw: string): any {
-    if (!raw) throw new Error('Empty AI response');
-    let text = raw.trim();
-    const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-    if (fence) text = fence[1].trim();
-    const start = text.indexOf('{');
-    const end = text.lastIndexOf('}');
-    if (start !== -1 && end !== -1) text = text.slice(start, end + 1);
-    try {
-      return JSON.parse(text);
-    } catch {
-      // Salvage common LLM JSON slips: trailing commas before } or ].
-      return JSON.parse(text.replace(/,\s*([}\]])/g, '$1'));
+      // FLUX returns base64 encoded image in 'images' array or 'image' field
+      if (data.images && data.images.length > 0) {
+        const base64Image = data.images[0];
+        // Return as data URL for frontend to use
+        return `data:image/png;base64,${base64Image}`;
+      } else if (data.image) {
+        const base64Image = data.image;
+        return `data:image/png;base64,${base64Image}`;
+      } else if (data.uri) {
+        // Some models return a URI
+        return data.uri;
+      } else {
+        console.warn('[AiEngine] No image in response, returning placeholder');
+        return `https://placehold.co/${size}/F59E0B/FFFFFF?text=No+Image+Generated`;
+      }
+    } catch (error) {
+      console.error('[AiEngine] Error generating image:', error);
+      // Return placeholder on exception
+      return `https://placehold.co/${size}/EF4444/FFFFFF?text=Error+Generating+Image`;
     }
   }
 

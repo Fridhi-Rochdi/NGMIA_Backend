@@ -24,6 +24,40 @@ export class GenerateBrandingDto {
   values?: string[];
 }
 
+export class RegenerateLogoDto {
+  @ApiProperty({ required: false, description: 'Description personnalisée pour guider la régénération du logo (en anglais recommandé)' })
+  @IsOptional()
+  @IsString()
+  logoDescription?: string;
+}
+
+export class ModifyLogoDto {
+  @ApiProperty({ required: false, description: 'Nouvelle description pour le logo (en anglais)' })
+  @IsOptional()
+  @IsString()
+  logoDescription?: string;
+
+  @ApiProperty({ required: false, description: 'Couleur primaire (hex)' })
+  @IsOptional()
+  @IsString()
+  primaryColor?: string;
+
+  @ApiProperty({ required: false, description: 'Couleur secondaire (hex)' })
+  @IsOptional()
+  @IsString()
+  secondaryColor?: string;
+
+  @ApiProperty({ required: false, description: 'Couleur d\'accent (hex)' })
+  @IsOptional()
+  @IsString()
+  accentColor?: string;
+
+  @ApiProperty({ required: false, description: 'Style de design' })
+  @IsOptional()
+  @IsEnum(['modern', 'classic', 'playful', 'luxurious', 'tech'])
+  style?: string;
+}
+
 export class UpdateBrandingDto {
   @ApiProperty({ required: false })
   @IsOptional()
