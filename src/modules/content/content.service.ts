@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, Logger } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { AiEngineService } from '../ai-engine/ai-engine.service';
 import { GenerateContentDto, UpdateContentDto } from './content.dto';
@@ -6,6 +6,8 @@ import { ContentType, ContentLength, ContentStatus } from '@prisma/client';
 
 @Injectable()
 export class ContentService {
+  private readonly logger = new Logger(ContentService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly aiEngine: AiEngineService,
@@ -18,6 +20,22 @@ export class ContentService {
       length: dto.length,
     });
 
+    // Generate a matching image if the user requested it
+    let imageUrl: string | null = null;
+    if (dto.generateImage) {
+      try {
+        const imagePrompt = `Professional marketing visual for: ${dto.title}. ${dto.prompt.substring(0, 200)}. High quality, brand-safe, no text overlay, no watermark.`;
+        imageUrl = await this.aiEngine.generateImage({
+          prompt: imagePrompt,
+          size: '1024x1024',
+        });
+        this.logger.log(`Image generated for content "${dto.title}"`);
+      } catch (err: any) {
+        this.logger.warn(`Image generation failed for content "${dto.title}": ${err.message}`);
+        // Content is still valid without image — continue
+      }
+    }
+
     return this.prisma.content.create({
       data: {
         title: dto.title,
@@ -27,6 +45,7 @@ export class ContentService {
         length: (dto.length?.toUpperCase() as ContentLength) || ContentLength.MEDIUM,
         status: ContentStatus.GENERATED,
         prompt: dto.prompt,
+        imageUrl,
         tenantId,
         userId,
       },

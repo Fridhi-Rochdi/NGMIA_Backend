@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsString, IsOptional, IsEnum, IsArray } from 'class-validator';
+import { IsString, IsOptional, IsEnum, IsArray, IsBoolean } from 'class-validator';
 
 export class GenerateContentDto {
   @ApiProperty()
@@ -29,6 +29,11 @@ export class GenerateContentDto {
   @IsOptional()
   @IsArray()
   keywords?: string[];
+
+  @ApiProperty({ required: false, description: 'Ask AI to generate a matching image for this content' })
+  @IsOptional()
+  @IsBoolean()
+  generateImage?: boolean;
 }
 
 export class UpdateContentDto {

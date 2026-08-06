@@ -30,12 +30,12 @@ model Tenant {
   images      Image[]
   calendars   Calendar[]
   socialAccounts SocialAccount[]
-  websites    Website[]
-  menus       Menu[]
-  posters     Poster[]
-  qrCodes     QrCode[]
   subscription Subscription?
   paymentMethods PaymentMethod[]
+  websites      Website[]
+  menus         Menu[]
+  posters       Poster[]
+  qrCodes       QrCode[]
 
   @@map("tenants")
 }
@@ -113,6 +113,7 @@ model Content {
   status      ContentStatus @default(DRAFT)
   aiModel     String        @default("gpt-4-simulated")
   prompt      String?
+  imageUrl    String?
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
 
@@ -129,27 +130,27 @@ model Content {
 // ============================================
 
 model Image {
-  id            String      @id @default(uuid())
-  prompt        String
-  businessName  String?
-  businessType  String?
-  description   String?
-  template      String      @default("modern")
-  primaryColor  String      @default("#3b82f6")
-  secondaryColor String     @default("#1e3a8a")
-  accentColor   String      @default("#22c55e")
-  fontFamily    String      @default("Inter")
-  enhancedPrompt String?    @db.Text
-  url           String
-  thumbnailUrl  String?
-  width         Int?
-  height        Int?
-  style         String      @default("realistic")
-  format        String      @default("png")
-  aiModel       String      @default("dall-e-simulated")
-  status        ImageStatus @default(PENDING)
-  createdAt     DateTime    @default(now())
-  updatedAt     DateTime    @updatedAt
+  id          String     @id @default(uuid())
+  prompt      String
+  url         String
+  thumbnailUrl String?
+  width       Int?
+  height      Int?
+  style       String     @default("realistic")
+  format      String     @default("png")
+  aiModel     String     @default("dall-e-simulated")
+  status      ImageStatus @default(PENDING)
+  businessName String?
+  businessType String?
+  description  String?
+  template      String?
+  primaryColor  String?
+  secondaryColor String?
+  accentColor   String?
+  fontFamily    String?
+  enhancedPrompt String?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
 
   tenantId    String
   tenant      Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -220,152 +221,6 @@ model SocialAccount {
 
   @@unique([platform, accountId, tenantId])
   @@map("social_accounts")
-}
-
-// ============================================
-// Website Module
-// ============================================
-
-model Website {
-  id           String         @id @default(uuid())
-  businessName String
-  businessType String
-  description  String
-  services     String[]
-  contactPhone String?
-  contactEmail String?
-  contactAddress String?
-  primaryColor String         @default("#3b82f6")
-  secondaryColor String       @default("#1e3a8a")
-  accentColor  String         @default("#22c55e")
-  template     String         @default("modern")
-  fontFamily   String         @default("Inter")
-  logoUrl      String?
-  logoText     String?
-  // Structured, editable source of truth: { meta, theme, logo, sections[], contact }
-  content      Json?
-  // Compiled HTML cache (rendered from `content`); regenerated on every change.
-  html         String         @db.Text
-  css          String          @db.Text
-  subdomain    String         @unique
-  status       WebsiteStatus  @default(DRAFT)
-  publishedAt  DateTime?
-  // Vercel deployment
-  vercelProjectId    String?
-  vercelDeploymentId String?
-  vercelUrl          String?
-  deploymentStatus   String?  @default("NONE")
-  createdAt    DateTime       @default(now())
-  updatedAt    DateTime       @updatedAt
-
-  tenantId     String
-  tenant       Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  userId       String
-  user         User           @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@map("websites")
-}
-
-// ============================================
-// Menu Module
-// ============================================
-
-model Menu {
-  id           String      @id @default(uuid())
-  name         String
-  businessName String
-  businessType String      // RESTAURANT, CAFE, BAR, BAKERY, etc.
-  description  String?
-  categories   Json        // Array of categories with items
-  template     String      @default("modern")
-  primaryColor String      @default("#3b82f6")
-  secondaryColor String    @default("#1e3a8a")
-  accentColor  String      @default("#22c55e")
-  fontFamily   String      @default("Inter")
-  fontSizes    Json?
-  html         String      @db.Text
-  css          String      @db.Text
-  imageUrl     String?     // Generated PNG image URL
-  thumbnailUrl String?
-  status       MenuStatus  @default(DRAFT)
-  slug         String      @unique
-  publishedAt  DateTime?
-  vercelUrl    String?     // Deployed URL for online menu
-  qrCodeUrl    String?     // QR code URL pointing to deployed menu
-  createdAt    DateTime    @default(now())
-  updatedAt    DateTime    @updatedAt
-
-  tenantId     String
-  tenant       Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  userId       String
-  user         User        @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@map("menus")
-}
-
-// ============================================
-// Poster Module
-// ============================================
-
-model Poster {
-  id           String        @id @default(uuid())
-  name         String
-  businessName String
-  businessType String        // RESTAURANT, RETAIL, EVENT, PROMOTION, etc.
-  title        String
-  description  String?
-  sections     Json?
-  template     String        @default("modern")
-  primaryColor String        @default("#3b82f6")
-  secondaryColor String     @default("#1e3a8a")
-  accentColor  String        @default("#22c55e")
-  fontFamily   String        @default("Inter")
-  fontSizes    Json?
-  content      String        @db.Text  // HTML/CSS content
-  imageUrl     String?       // Generated PNG image URL
-  thumbnailUrl String?
-  size         String        @default("A4")  // A4, A3, SOCIAL_MEDIA, STORY
-  status       PosterStatus  @default(DRAFT)
-  slug         String        @unique
-  publishedAt  DateTime?
-  vercelUrl    String?       // Deployed URL for online poster
-  qrCodeUrl    String?       // QR code URL pointing to deployed poster
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
-
-  tenantId     String
-  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  userId       String
-  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@map("posters")
-}
-
-
-// ============================================
-// QR Code Module
-// ============================================
-
-model QrCode {
-  id          String         @id @default(uuid())
-  name        String
-  type        String         @default("url")
-  data        String         @db.Text
-  url         String
-  size        Int            @default(300)
-  color       String         @default("#000000")
-  bgColor     String         @default("#ffffff")
-  logo        String?
-  format      String         @default("png")
-  createdAt   DateTime       @default(now())
-  updatedAt   DateTime       @updatedAt
-
-  tenantId    String
-  tenant      Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  userId      String
-  user        User           @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@map("qr_codes")
 }
 
 // ============================================
@@ -529,14 +384,141 @@ enum WebsiteStatus {
   ARCHIVED
 }
 
-enum MenuStatus {
-  DRAFT
-  PUBLISHED
-  ARCHIVED
+// ============================================
+// Website Module
+// ============================================
+
+model Website {
+  id              String        @id @default(uuid())
+  businessName    String
+  businessType    String
+  description     String
+  services        String[]
+  contactPhone    String?
+  contactEmail    String?
+  contactAddress  String?
+  primaryColor    String        @default("#3b82f6")
+  secondaryColor  String        @default("#1e3a8a")
+  accentColor     String        @default("#22c55e")
+  fontFamily      String        @default("Inter")
+  template        String        @default("modern")
+  logoUrl         String?
+  logoText        String?
+  content         Json?
+  html            String
+  css             String
+  subdomain       String        @unique
+  status          WebsiteStatus @default(DRAFT)
+  deploymentStatus String?
+  publishedAt     DateTime?
+  vercelProjectId String?
+  vercelDeploymentId String?
+  vercelUrl       String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  tenantId        String
+  tenant          Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userId          String
+  user            User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("websites")
 }
 
-enum PosterStatus {
-  DRAFT
-  PUBLISHED
-  ARCHIVED
+// ============================================
+// Menu Module
+// ============================================
+
+model Menu {
+  id              String   @id @default(uuid())
+  name            String
+  businessName    String
+  businessType    String
+  description     String   @default("")
+  categories      Json
+  template        String   @default("MODERN")
+  primaryColor    String   @default("#3b82f6")
+  secondaryColor  String   @default("#1e3a8a")
+  accentColor     String   @default("#22c55e")
+  fontFamily      String   @default("Inter")
+  fontSizes       Json?
+  html            String
+  css             String
+  slug            String
+  status          String   @default("DRAFT")
+  publishedAt     DateTime?
+  vercelUrl       String?
+  qrCodeUrl       String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  tenantId        String
+  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("menus")
+}
+
+// ============================================
+// Poster Module
+// ============================================
+
+model Poster {
+  id              String   @id @default(uuid())
+  name            String
+  businessName    String
+  businessType    String
+  title           String
+  description     String?
+  sections        Json?
+  template        String   @default("MODERN")
+  size            String   @default("SQUARE")
+  primaryColor    String   @default("#1a1a2e")
+  secondaryColor  String   @default("#16213e")
+  accentColor     String   @default("#e94560")
+  fontFamily      String   @default("Inter")
+  fontSizes       Json?
+  content         String?
+  imageUrl        String?
+  slug            String
+  status          String   @default("DRAFT")
+  publishedAt     DateTime?
+  vercelUrl       String?
+  qrCodeUrl       String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  tenantId        String
+  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("posters")
+}
+
+// ============================================
+// QR Code Module
+// ============================================
+
+model QrCode {
+  id              String   @id @default(uuid())
+  name            String
+  type            String   @default("url")
+  data            String
+  url             String
+  size            Int      @default(300)
+  color           String   @default("#000000")
+  bgColor         String   @default("#ffffff")
+  logo            String?
+  format          String   @default("png")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  tenantId        String
+  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("qr_codes")
 }

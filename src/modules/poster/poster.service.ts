@@ -339,7 +339,7 @@ Crée une direction artistique spécifique puis son HTML/CSS. .poster doit utili
           .filter(label => normalizedVisible.includes(label) && !normalizedSource.includes(label));
         if (inventedLabels.length) issues.push(`invented decorative labels: ${inventedLabels.join(', ')}`);
         const inventedYears = Array.from(new Set(visibleCopy.match(/\b20\d{2}\b/g) || []))
-          .filter(year => !suppliedCopy.includes(year));
+          .filter((year: string) => !suppliedCopy.includes(year));
         if (inventedYears.length) issues.push(`invented year: ${inventedYears.join(', ')}`);
         const undersizedTextRules = Array.from(html.matchAll(/font-size\s*:\s*(\d+(?:\.\d+)?)px/gi))
           .map(match => Number(match[1]))

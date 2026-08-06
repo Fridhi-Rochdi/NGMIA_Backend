@@ -40,11 +40,12 @@ export class BrandingService {
     // Step 2: Generate logo via NVIDIA NIM IMAGE GENERATION API (real PNG/SVG)
     let logoUrl: string | null = null;
     try {
+      const logoDesc = branding.description || dto.description || `${dto.brandName} ${dto.industry || ''} logo`;
       logoUrl = await this.aiEngine.generateLogo({
         brandName: dto.brandName,
         industry: dto.industry,
         style: dto.style || 'modern',
-        logoDescription: branding.logoDescription,
+        logoDescription: logoDesc,
         primaryColor,
         secondaryColor,
         accentColor,
@@ -89,7 +90,7 @@ export class BrandingService {
         vision: branding.vision,
         colorPalette: colorArray,
         typography: { heading: headingFont, body: bodyFont },
-        logoDescription: branding.logoDescription,
+        logoDescription: branding.description || dto.description,
         hasLogo: !!logoUrl,
       },
     };

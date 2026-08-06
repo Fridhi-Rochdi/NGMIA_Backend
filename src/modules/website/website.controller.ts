@@ -43,19 +43,19 @@ export class WebsiteController {
 
   @UseGuards(JwtAuthGuard)
   @Get(':id')
-  async getWebsite(@Param('id') id: string) {
-    return this.websiteService.getWebsite(id);
+  async getWebsite(@Param('id') id: string, @Request() req: AuthenticatedRequest) {
+    return this.websiteService.getWebsite(id, req.user.tenantId);
   }
 
   @UseGuards(JwtAuthGuard)
   @Post(':id/publish')
-  async publishWebsite(@Param('id') id: string) {
-    return this.websiteService.publishWebsite(id);
+  async publishWebsite(@Param('id') id: string, @Request() req: AuthenticatedRequest) {
+    return this.websiteService.publishWebsite(id, req.user.tenantId);
   }
 
   @UseGuards(JwtAuthGuard)
   @Get(':id/deployment-status')
-  async getDeploymentStatus(@Param('id') id: string) {
-    return this.websiteService.getDeploymentStatus(id);
+  async getDeploymentStatus(@Param('id') id: string, @Request() req: AuthenticatedRequest) {
+    return this.websiteService.getDeploymentStatus(id, req.user.tenantId);
   }
 }

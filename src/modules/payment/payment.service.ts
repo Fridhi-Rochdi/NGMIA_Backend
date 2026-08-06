@@ -38,7 +38,7 @@ export class PaymentService {
         currency: dto.currency || 'EUR',
         interval: dto.interval || 'month',
         stripePriceId: dto.stripePriceId,
-        features: (dto.features ?? {}) as any,
+        features: (dto.features || {}) as any,
       },
     });
   }
@@ -54,7 +54,7 @@ export class PaymentService {
         currency: dto.currency,
         interval: dto.interval,
         stripePriceId: dto.stripePriceId,
-        features: (dto.features ?? {}) as any,
+        features: dto.features as any,
         isActive: dto.isActive,
       },
     });
