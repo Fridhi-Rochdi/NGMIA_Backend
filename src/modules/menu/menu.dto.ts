@@ -1,4 +1,4 @@
-import { IsString, IsOptional, IsArray, ValidateNested, IsEnum } from 'class-validator';
+import { IsString, IsOptional, IsArray, ValidateNested, IsEnum, IsInt, Min, Max, IsNumber } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export enum MenuBusinessType {
@@ -52,6 +52,28 @@ export class MenuCategoryDto {
   items: MenuItemDto[];
 }
 
+export class FontSizesDto {
+  @IsNumber()
+  @IsOptional()
+  title?: number;
+
+  @IsNumber()
+  @IsOptional()
+  category?: number;
+
+  @IsNumber()
+  @IsOptional()
+  item?: number;
+
+  @IsNumber()
+  @IsOptional()
+  description?: number;
+
+  @IsNumber()
+  @IsOptional()
+  price?: number;
+}
+
 export class MenuColorsDto {
   @IsString()
   @IsOptional()
@@ -95,6 +117,18 @@ export class MenuGenerationDto {
   @IsString()
   @IsOptional()
   fontFamily?: string;
+
+  @ValidateNested()
+  @Type(() => FontSizesDto)
+  @IsOptional()
+  fontSizes?: FontSizesDto;
+
+  @IsInt()
+  @Min(1)
+  @Max(20)
+  @IsOptional()
+  @Type(() => Number)
+  pageCount?: number;
 }
 
 export class MenuUpdateDto {
@@ -120,4 +154,9 @@ export class MenuUpdateDto {
   @IsString()
   @IsOptional()
   fontFamily?: string;
+
+  @ValidateNested()
+  @Type(() => FontSizesDto)
+  @IsOptional()
+  fontSizes?: FontSizesDto;
 }

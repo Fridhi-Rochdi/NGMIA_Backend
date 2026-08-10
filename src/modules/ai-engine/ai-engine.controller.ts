@@ -5,18 +5,31 @@ import {
   HttpCode, 
   HttpStatus,
   UseGuards,
+  Inject,
+  forwardRef,
 } from '@nestjs/common';
-import { AiEngineService, GenerateTextOptions, GenerateImageOptions, GenerateBrandingOptions, GenerateSocialPostOptions } from './ai-engine.service';
+import { AiEngineService } from './ai-engine.service';
+import { MenuService } from '../menu/menu.service';
 import { 
   GenerateReelsDto, 
   GenerateReelsResponse,
+  GenerateTextOptions,
+  GenerateImageOptions,
+  GenerateBrandingOptions,
+  GenerateSocialPostOptions,
 } from './ai-engine.dto';
+import { MenuGenerationDto } from '../menu/menu.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
 
 @Controller('ai-engine')
 @UseGuards(JwtAuthGuard)
 export class AiEngineController {
-  constructor(private readonly aiEngineService: AiEngineService) {}
+  constructor(
+    private readonly aiEngineService: AiEngineService,
+    @Inject(forwardRef(() => MenuService))
+    private readonly menuService: MenuService,
+  ) {}
 
   @Post('generate-text')
   @HttpCode(HttpStatus.OK)
@@ -49,5 +62,15 @@ export class AiEngineController {
   @HttpCode(HttpStatus.OK)
   async generateReels(@Body() dto: GenerateReelsDto): Promise<GenerateReelsResponse> {
     return this.aiEngineService.generateReels(dto);
+  }
+
+  @Post('generate-menu')
+  @HttpCode(HttpStatus.CREATED)
+  async generateMenu(
+    @Body() dto: MenuGenerationDto,
+    @CurrentUser('tenantId') tenantId: string,
+    @CurrentUser('sub') userId: string,
+  ) {
+    return this.menuService.generateMenu(dto, tenantId, userId);
   }
 }

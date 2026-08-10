@@ -2,6 +2,10 @@ import { Injectable } from '@nestjs/common';
 import {
   GenerateReelsDto,
   GenerateReelsResponse,
+  GenerateTextOptions,
+  GenerateImageOptions,
+  GenerateBrandingOptions,
+  GenerateSocialPostOptions,
   ReelDuration,
   ReelPlatform,
   ReelTheme,
@@ -12,135 +16,231 @@ import {
   TransitionType,
 } from './ai-engine.dto';
 
-export interface GenerateTextOptions {
-  prompt: string;
-  tone?: string;
-  length?: string;
-  language?: string;
-  maxTokens?: number;
-}
-
-export interface GenerateLogoOptions {
-  brandName: string;
-  industry?: string;
-  style?: string;
-  logoDescription?: string;
-  primaryColor?: string;
-  secondaryColor?: string;
-  accentColor?: string;
-}
-
-export interface GenerateWebsiteContentJsonOptions {
-  businessName: string;
-  businessType: string;
-  description: string;
-  services?: string[];
-  targetAudience?: string;
-  tone?: string;
-  language?: string;
-  context?: string;
-  sections?: string[];
-}
-
-export interface GenerateSectionJsonOptions {
-  request: string;
-  businessName: string;
-  businessType: string;
-  description: string;
-  language?: string;
-}
-
-export interface GenerateImageOptions {
-  prompt: string;
-  size?: '256x256' | '512x512' | '1024x1024';
-  style?: string;
-  aspectRatio?: string;
-}
-
-export interface GenerateBrandingOptions {
-  brandName: string;
-  industry?: string;
-  description?: string;
-  style?: string;
-  values?: string[];
-}
-
-export interface GenerateSocialPostOptions {
-  topic: string;
-  platform: string;
-  tone?: string;
-  hashtags?: string[];
-}
-
 @Injectable()
 export class AiEngineService {
   async generateText(
     options: GenerateTextOptions,
-    _model?: string,
-    _system?: string,
+    overrideModel?: string,
+    overrideSystem?: string,
   ): Promise<string> {
-    const { prompt, tone = 'professional', length = 'medium' } = options;
+    const { prompt, tone = 'professional', length = 'MEDIUM' } = options;
+    const apiKey = process.env.NVIDIA_NIM_API_KEY;
+    const baseUrl = process.env.NVIDIA_NIM_BASE_URL || 'https://integrate.api.nvidia.com/v1';
+    const model = overrideModel || process.env.NVIDIA_NIM_TEXT_MODEL || 'meta/llama-3.1-70b-instruct';
 
-    const templates: Record<string, string[]> = {
-      professional: [
-        `We are excited to announce our latest initiative focused on ${prompt}. This strategic approach will help us achieve our goals and deliver exceptional value to our stakeholders.`,
-        `In today's competitive landscape, ${prompt} has become a critical factor for success. Our team is dedicated to leveraging this opportunity to drive growth and innovation.`,
-      ],
-      casual: [
-        `Hey everyone! We're super excited about ${prompt} and can't wait to share more with you. Stay tuned for some awesome updates!`,
-        `So, here's the deal with ${prompt} - we think it's going to be amazing and we hope you do too!`,
-      ],
-      humorous: [
-        `Why did the ${prompt} cross the road? To get to the other side of success! But seriously, we're excited about this.`,
-        `They say ${prompt} is the new black. We say it's the new everything! Let's make some magic happen.`,
-      ],
-      inspirational: [
-        `Believe in the power of ${prompt}. Together, we can achieve extraordinary things and create a lasting impact.`,
-        `The journey of ${prompt} begins with a single step. Let's take that step together and build something remarkable.`,
-      ],
-    };
-
-    const toneTemplates = templates[tone] || templates.professional;
-    const text = toneTemplates[Math.floor(Math.random() * toneTemplates.length)];
-
-    if (length === 'short') {
-      return text.split('.').slice(0, 2).join('.') + '.';
-    } else if (length === 'long') {
-      return text + ' ' + text + ' This is an extended version with more details and insights to provide comprehensive coverage of the topic.';
+    if (!apiKey) {
+      console.error('NVIDIA_NIM_API_KEY is not set in environment variables');
+      throw new Error('AI Engine is not configured correctly. Missing API Key.');
     }
 
-    return text;
+    // Determine target max_tokens based on length requested
+    let maxTokens = 500;
+    const upperLength = length.toUpperCase();
+    if (upperLength === 'SHORT') maxTokens = 200;
+    else if (upperLength === 'MEDIUM') maxTokens = 800;
+    else if (upperLength === 'LONG') maxTokens = 1500;
+    else if (upperLength === 'COMPLET') maxTokens = 160000;
+    if (options.maxTokens) maxTokens = options.maxTokens;
+
+    const defaultSystemPrompt = `You are a world-class expert marketing copywriter and conversion strategist for NextGen MarketingAI.
+Your goal is to generate highly engaging, persuasive, and high-converting marketing content (Ads, Social Posts, Emails).
+
+STRICT CONSTRAINTS:
+1. Output language: You MUST write the final content in the SAME language as the user's prompt (e.g., if the user prompts in French, write in French. If in English, write in English).
+2. Tone: Adhere strictly to the requested tone: ${tone}.
+3. Formatting: Use proper spacing, bullet points, and appropriate emojis to make the text visually appealing and easy to read on mobile.
+4. Framework: Use proven marketing frameworks like AIDA (Attention, Interest, Desire, Action) or PAS (Problem, Agitation, Solution).
+5. Output ONLY the marketing copy itself. Do NOT include meta-commentary like "Here is your post:" or "Sure, I can help with that."
+
+Apply your deep understanding of human psychology, persuasion, and modern social media algorithms to maximize engagement and conversions.`;
+    const systemPrompt = overrideSystem || defaultSystemPrompt;
+
+    // Cap max_tokens to the model's remaining context window.
+    const promptTokens = Math.ceil((prompt.length + systemPrompt.length) / 4);
+    const modelMaxContext = 131072;
+    const maxAllowedTokens = Math.max(1, modelMaxContext - promptTokens - 100);
+    if (maxTokens > maxAllowedTokens) {
+      console.warn(`[AI Engine] Capping max_tokens from ${maxTokens} to ${maxAllowedTokens} for model context window`);
+      maxTokens = maxAllowedTokens;
+    }
+
+    try {
+      console.log(`[AI Engine] Sending request to ${baseUrl}/chat/completions`);
+      console.log(`[AI Engine] Model: ${model}`);
+      console.log(`[AI Engine] API Key starts with: ${apiKey.substring(0, 10)}...`);
+      
+      const payload = {
+        model: model,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: prompt }
+        ],
+        temperature: 0.7,
+        max_tokens: maxTokens,
+        top_p: 1,
+      };
+      
+      console.log(`[AI Engine] Payload:`, JSON.stringify(payload, null, 2));
+
+      const response = await fetch(`${baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+          'Accept': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('[AI Engine] NVIDIA API Error Response:', response.status, response.statusText, errorText);
+        throw new Error(`Failed to generate content from AI engine: ${response.status} - ${errorText}`);
+      }
+
+      const data = await response.json();
+      console.log('[AI Engine] Response Data:', JSON.stringify(data).substring(0, 500) + '...');
+      
+      const generatedText = data.choices[0].message.content.trim();
+      console.log('[AI Engine] Generated Text (first 100 chars):', generatedText.substring(0, 100));
+      return generatedText;
+    } catch (error) {
+      console.error('[AI Engine] AI Generation Error Caught:', error);
+      throw error;
+    }
   }
 
-  async generateTextStreaming(
-    options: GenerateTextOptions,
-    _model?: string,
-    _system?: string,
-  ): Promise<string> {
-    // Delegates to generateText; real implementation would use streaming.
-    return this.generateText(options, _model, _system);
+  async generateWebsiteHtml(options: {
+    prompt: string;
+    businessName: string;
+    template?: string;
+    colors?: { primary?: string; secondary?: string; accent?: string };
+  }): Promise<string> {
+    const apiKey = process.env.NVIDIA_NIM_API_KEY;
+    const baseUrl = process.env.NVIDIA_NIM_BASE_URL || 'https://integrate.api.nvidia.com/v1';
+    const model = process.env.NVIDIA_NIM_TEXT_MODEL || 'meta/llama-3.1-70b-instruct';
+
+    if (!apiKey) {
+      throw new Error('AI Engine is not configured correctly. Missing API Key.');
+    }
+
+    const systemPrompt = `You are an expert web developer specializing in creating stunning, professional business showcase websites.
+You generate complete, self-contained HTML files with embedded Tailwind CSS and animations.
+
+STRICT RULES:
+1. Output ONLY a complete, valid HTML document starting with <!DOCTYPE html>
+2. Use Tailwind CSS via CDN: <script src="https://cdn.tailwindcss.com"></script>
+3. Use Google Fonts Inter for typography
+4. Create a FULL website with: sticky navigation, hero section, services, about, contact form, footer
+5. The website must be responsive (mobile-first)
+6. Add smooth scroll, hover effects, and CSS animations
+7. Use the exact colors specified by the user
+8. Write all content in FRENCH
+9. DO NOT include any explanation or markdown — ONLY raw HTML
+10. The site must look premium and professional`;
+
+    const response = await fetch(`${baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+        'Accept': 'application/json',
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: options.prompt },
+        ],
+        temperature: 0.5,
+        max_tokens: 4096,
+        top_p: 1,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('NVIDIA API Error (website):', errorText);
+      throw new Error('Failed to generate website HTML from AI engine');
+    }
+
+    const data = await response.json();
+    return data.choices[0].message.content.trim();
   }
 
   async generateImage(options: GenerateImageOptions): Promise<string> {
     const { prompt, size = '512x512' } = options;
+    const apiKey = process.env.NVIDIA_NIM_API_KEY;
 
-    const placeholders: Record<string, string[]> = {
-      '256x256': [
-        'https://placehold.co/256x256/3B82F6/FFFFFF?text=AI+Image',
-        'https://placehold.co/256x256/10B981/FFFFFF?text=Generated',
-      ],
-      '512x512': [
-        'https://placehold.co/512x512/8B5CF6/FFFFFF?text=AI+Generated+Image',
-        'https://placehold.co/512x512/F59E0B/FFFFFF?text=Marketing+Image',
-      ],
-      '1024x1024': [
-        'https://placehold.co/1024x1024/EC4899/FFFFFF?text=High+Res+AI+Image',
-        'https://placehold.co/1024x1024/6366F1/FFFFFF?text=Premium+Image',
-      ],
-    };
+    if (!apiKey) {
+      console.error('[AiEngine] NVIDIA_NIM_API_KEY is not set');
+      throw new Error('AI Engine is not configured correctly. Missing API Key.');
+    }
 
-    const sizePlaceholders = placeholders[size] || placeholders['512x512'];
-    return sizePlaceholders[Math.floor(Math.random() * sizePlaceholders.length)];
+    // Parse size to width/height for FLUX API
+    const [width, height] = size.split('x').map(Number);
+    const validWidths = [1024, 768, 1344, 896, 1152, 832];
+    const validHeights = [1024, 1344, 768, 1152, 896, 1216, 832];
+    const finalWidth = validWidths.includes(width) ? width : 1024;
+    const finalHeight = validHeights.includes(height) ? height : 1024;
+
+    console.log('[AiEngine] generateImage() called');
+    console.log('[AiEngine] Prompt:', prompt);
+    console.log('[AiEngine] Size:', size, '->', finalWidth, 'x', finalHeight);
+
+    try {
+      // Use NVIDIA FLUX.1-schnell model for image generation
+      // Endpoint: https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.1-schnell
+      const invokeUrl = 'https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.1-schnell';
+
+      console.log('[AiEngine] Calling NVIDIA FLUX API:', invokeUrl);
+
+      const response = await fetch(invokeUrl, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
+        body: JSON.stringify({
+          prompt: prompt,
+          width: finalWidth,
+          height: finalHeight,
+          steps: 4, // FLUX.1-schnell is optimized for 1-4 steps
+          seed: Math.floor(Math.random() * 2147483647),
+        }),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('[AiEngine] NVIDIA Image API Error:', response.status, errorText);
+        // Return placeholder on error
+        return `https://placehold.co/${size}/6366F1/FFFFFF?text=Image+Generation+Failed`;
+      }
+
+      const data = await response.json();
+      console.log('[AiEngine] Image generation response:', JSON.stringify(data).substring(0, 200));
+
+      // FLUX returns base64 encoded image in 'images' array or 'image' field
+      if (data.images && data.images.length > 0) {
+        const base64Image = data.images[0];
+        // Return as data URL for frontend to use
+        return `data:image/png;base64,${base64Image}`;
+      } else if (data.image) {
+        const base64Image = data.image;
+        return `data:image/png;base64,${base64Image}`;
+      } else if (data.uri) {
+        // Some models return a URI
+        return data.uri;
+      } else {
+        console.warn('[AiEngine] No image in response, returning placeholder');
+        return `https://placehold.co/${size}/F59E0B/FFFFFF?text=No+Image+Generated`;
+      }
+    } catch (error) {
+      console.error('[AiEngine] Error generating image:', error);
+      // Return placeholder on exception
+      return `https://placehold.co/${size}/EF4444/FFFFFF?text=Error+Generating+Image`;
+    }
   }
 
   async generateBranding(options: GenerateBrandingOptions): Promise<{
@@ -568,220 +668,33 @@ export class AiEngineService {
     };
   }
 
-  // ── Logo generation (placeholder SVG) ──
+  // ─── Methods required by other modules ───
 
-  async generateLogo(options: GenerateLogoOptions): Promise<string> {
-    const {
-      brandName,
-      industry = 'technology',
-      style = 'modern',
-      primaryColor = '#3B82F6',
-      secondaryColor = '#1E3A5F',
-      accentColor = '#F59E0B',
-    } = options;
+  async generateTextStreaming(options: GenerateTextOptions, model?: string, system?: string): Promise<string> {
+    return this.generateText(options, model, system);
+  }
 
-    const initials = brandName
-      .split(/\s+/)
-      .map(w => w[0])
-      .join('')
-      .toUpperCase()
-      .slice(0, 3);
-
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
-  <defs>
-    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:${primaryColor}"/>
-      <stop offset="100%" style="stop-color:${secondaryColor}"/>
-    </linearGradient>
-  </defs>
-  <rect width="512" height="512" rx="80" fill="url(#bg)"/>
-  <circle cx="256" cy="200" r="60" fill="none" stroke="${accentColor}" stroke-width="6" opacity="0.9"/>
-  <text x="256" y="340" text-anchor="middle" font-family="Inter, sans-serif" font-size="72" font-weight="800" fill="white" letter-spacing="4">${initials}</text>
-  <text x="256" y="400" text-anchor="middle" font-family="Inter, sans-serif" font-size="22" fill="${accentColor}" letter-spacing="6" opacity="0.9">${industry.toUpperCase()}</text>
-</svg>`;
-
+  async generateLogo(options: { brandName: string; industry?: string; style?: string; logoDescription?: string; primaryColor?: string; secondaryColor?: string; accentColor?: string }): Promise<string> {
+    const { brandName, primaryColor = '#3B82F6', secondaryColor = '#1E3A5F', accentColor = '#F59E0B' } = options;
+    const initials = brandName.split(/\s+/).map(w => w[0]).join('').toUpperCase().slice(0, 3);
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512"><defs><linearGradient id="bg"><stop offset="0%" stop-color="${primaryColor}"/><stop offset="100%" stop-color="${secondaryColor}"/></linearGradient></defs><rect width="512" height="512" rx="80" fill="url(#bg)"/><circle cx="256" cy="200" r="60" fill="none" stroke="${accentColor}" stroke-width="6"/><text x="256" y="340" text-anchor="middle" font-family="Inter" font-size="72" font-weight="800" fill="white">${initials}</text></svg>`;
     return `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
   }
 
-  // ── Website content JSON generation (placeholder) ──
-
-  async generateWebsiteContentJson(options: GenerateWebsiteContentJsonOptions): Promise<any> {
-    const { businessName, businessType, description, services, tone, language } = options;
-
-    const sections: any[] = [];
-
-    if (!options.sections || options.sections.includes('hero')) {
-      sections.push({
-        type: 'hero',
-        data: {
-          heading: businessName,
-          subheading: description?.slice(0, 120) || `${businessType} de qualité`,
-          ctaText: language === 'fr' ? 'Découvrir' : 'Discover',
-          ctaLink: '#contact',
-        },
-      });
-    }
-
-    if (!options.sections || options.sections.includes('about')) {
-      sections.push({
-        type: 'about',
-        data: {
-          heading: language === 'fr' ? 'À propos' : 'About',
-          body: description || `${businessName} est une entreprise ${businessType} engagée.`,
-          imagePrompt: `${businessType} ${businessName}, professional`,
-        },
-      });
-    }
-
-    if (!options.sections || options.sections.includes('services')) {
-      const items = (services || [`Service ${businessType}`, 'Conseil personnalisé', 'Support client']).map(name => ({
-        name,
-        description: `${name} — qualité professionnelle garantie.`,
-      }));
-      sections.push({
-        type: 'services',
-        data: {
-          heading: language === 'fr' ? 'Nos services' : 'Our services',
-          items,
-        },
-      });
-    }
-
-    if (!options.sections || options.sections.includes('testimonials')) {
-      sections.push({
-        type: 'testimonials',
-        data: {
-          heading: language === 'fr' ? 'Témoignages' : 'Testimonials',
-          items: [
-            { name: 'Client satisfait', quote: language === 'fr' ? 'Service exceptionnel !' : 'Outstanding service!', role: 'Client' },
-          ],
-        },
-      });
-    }
-
-    if (!options.sections || options.sections.includes('faq')) {
-      sections.push({
-        type: 'faq',
-        data: {
-          heading: 'FAQ',
-          items: [
-            { question: language === 'fr' ? 'Comment ça marche ?' : 'How does it work?', answer: description || 'Contactez-nous pour plus d\'informations.' },
-          ],
-        },
-      });
-    }
-
-    if (!options.sections || options.sections.includes('cta')) {
-      sections.push({
-        type: 'cta',
-        data: {
-          heading: language === 'fr' ? 'Prêt à commencer ?' : 'Ready to start?',
-          subheading: language === 'fr' ? 'Contactez-nous dès aujourd\'hui.' : 'Contact us today.',
-          buttonText: language === 'fr' ? 'Nous contacter' : 'Contact us',
-          buttonLink: '#contact',
-        },
-      });
-    }
-
-    if (!options.sections || options.sections.includes('contact')) {
-      sections.push({
-        type: 'contact',
-        data: {
-          heading: language === 'fr' ? 'Contact' : 'Contact',
-        },
-      });
-    }
-
-    return {
-      sections,
-      tone: tone || 'professional',
-      language: language || 'fr',
-    };
+  async generateWebsiteContentJson(options: any): Promise<any> {
+    const { businessName, description, services, language } = options;
+    const isFr = language === 'fr';
+    return { sections: [{ type: 'hero', data: { heading: businessName, subheading: description?.slice(0, 120) || '' } }, { type: 'about', data: { heading: isFr ? 'À propos' : 'About', body: description || '' } }, { type: 'services', data: { heading: isFr ? 'Nos services' : 'Our services', items: (services || []).map(n => ({ name: n, description: '' })) } }, { type: 'contact', data: { heading: isFr ? 'Contact' : 'Contact' } }], language: language || 'fr' };
   }
-
-  // ── Theme patch generation (placeholder) ──
 
   async generateThemePatch(instruction: string, _theme: any): Promise<any> {
-    const lower = instruction.toLowerCase();
-
-    if (lower.includes('sombre') || lower.includes('dark')) {
-      return { primaryColor: '#111827', secondaryColor: '#1F2937', accentColor: '#6366F1' };
-    }
-    if (lower.includes('clair') || lower.includes('light')) {
-      return { primaryColor: '#FFFFFF', secondaryColor: '#F9FAFB', accentColor: '#3B82F6' };
-    }
-    if (lower.includes('élégant') || lower.includes('elegant')) {
-      return { fontFamily: 'Playfair Display', template: 'classic', radius: 'medium' };
-    }
-    if (lower.includes('moderne') || lower.includes('modern')) {
-      return { fontFamily: 'Inter', template: 'modern', radius: 'small', buttonStyle: 'pill' };
-    }
-    if (lower.includes('coloré') || lower.includes('vibrant')) {
-      return { primaryColor: '#7C3AED', accentColor: '#F59E0B' };
-    }
-    if (lower.includes('minimal')) {
-      return { template: 'minimal', density: 'compact', radius: 'none' };
-    }
-    if (lower.includes('rond') || lower.includes('arrondi')) {
-      return { radius: 'large', buttonStyle: 'pill' };
-    }
-
-    return { fontFamily: 'Inter', primaryColor: '#2563EB' };
+    const l = instruction.toLowerCase();
+    if (l.includes('dark')) return { primaryColor: '#111827', secondaryColor: '#1F2937' };
+    if (l.includes('modern')) return { fontFamily: 'Inter', template: 'modern' };
+    return { fontFamily: 'Inter' };
   }
 
-  // ── Section JSON generation (placeholder) ──
-
-  async generateSectionJson(options: GenerateSectionJsonOptions): Promise<any> {
-    const { request, businessName, businessType, description, language } = options;
-    const isFr = language === 'fr';
-
-    const lower = request.toLowerCase();
-
-    if (lower.includes('équipe') || lower.includes('team')) {
-      return {
-        type: 'custom',
-        data: {
-          heading: isFr ? 'Notre équipe' : 'Our team',
-          subheading: isFr ? 'Des professionnels à votre service' : 'Professionals at your service',
-          items: [
-            { name: businessName, description: description?.slice(0, 80) || `${businessType} expert` },
-          ],
-        },
-      };
-    }
-
-    if (lower.includes('galerie') || lower.includes('gallery')) {
-      return {
-        type: 'gallery',
-        data: {
-          heading: isFr ? 'Galerie' : 'Gallery',
-          images: [],
-        },
-      };
-    }
-
-    if (lower.includes('tarif') || lower.includes('prix') || lower.includes('pricing')) {
-      return {
-        type: 'custom',
-        data: {
-          heading: isFr ? 'Nos tarifs' : 'Our pricing',
-          items: [
-            { name: 'Basique', price: 'À partir de 99€', description: 'Solution essentielle' },
-            { name: 'Premium', price: 'À partir de 299€', description: 'Solution complète' },
-          ],
-        },
-      };
-    }
-
-    // Default: generic custom section
-    return {
-      type: 'custom',
-      data: {
-        heading: request.slice(0, 80),
-        subheading: '',
-        body: '',
-        items: [],
-      },
-    };
+  async generateSectionJson(options: any): Promise<any> {
+    return { type: 'custom', data: { heading: options.request?.slice(0, 80) || 'New section', subheading: '', body: '', items: [] } };
   }
 }
