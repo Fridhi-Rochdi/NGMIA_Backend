@@ -188,59 +188,90 @@ STRICT RULES:
     console.log('[AiEngine] Prompt:', prompt);
     console.log('[AiEngine] Size:', size, '->', finalWidth, 'x', finalHeight);
 
-    try {
-      // Use NVIDIA FLUX.1-schnell model for image generation
-      // Endpoint: https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.1-schnell
-      const invokeUrl = 'https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.1-schnell';
+    const imageBaseUrl = process.env.NVIDIA_NIM_IMAGE_BASE_URL || 'https://ai.api.nvidia.com/v1/genai';
+    const imageModel = process.env.NVIDIA_NIM_IMAGE_MODEL || 'black-forest-labs/flux.2-klein-4b';
+    const invokeUrls = Array.from(new Set([
+      ...(process.env.NVIDIA_NIM_IMAGE_URLS || '')
+        .split(',')
+        .map(url => url.trim())
+        .filter(Boolean),
+      process.env.NVIDIA_NIM_IMAGE_URL || '',
+      `${imageBaseUrl}/${imageModel}`,
+      `${imageBaseUrl}/black-forest-labs/flux.2-klein-4b`,
+      `${imageBaseUrl}/black-forest-labs/flux.1-schnell`,
+    ].filter(Boolean)));
+    const timeoutMs = Number(process.env.NVIDIA_NIM_IMAGE_TIMEOUT_MS || 60000);
+    const maxAttempts = Number(process.env.NVIDIA_NIM_IMAGE_ATTEMPTS || 2);
+    let lastError: Error | null = null;
 
-      console.log('[AiEngine] Calling NVIDIA FLUX API:', invokeUrl);
+    for (const invokeUrl of invokeUrls) {
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
-      const response = await fetch(invokeUrl, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-        },
-        body: JSON.stringify({
-          prompt: prompt,
-          width: finalWidth,
-          height: finalHeight,
-          steps: 4, // FLUX.1-schnell is optimized for 1-4 steps
-          seed: Math.floor(Math.random() * 2147483647),
-        }),
-      });
+        try {
+          console.log(`[AiEngine] Calling NVIDIA FLUX API attempt ${attempt}/${maxAttempts}:`, invokeUrl);
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error('[AiEngine] NVIDIA Image API Error:', response.status, errorText);
-        // Return placeholder on error
-        return `https://placehold.co/${size}/6366F1/FFFFFF?text=Image+Generation+Failed`;
+          const response = await fetch(invokeUrl, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${apiKey}`,
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+            },
+            signal: controller.signal,
+            body: JSON.stringify({
+              prompt,
+              width: finalWidth,
+              height: finalHeight,
+              steps: 4,
+              seed: Math.floor(Math.random() * 2147483647),
+            }),
+          });
+
+          if (!response.ok) {
+            const errorText = await response.text();
+            console.error('[AiEngine] NVIDIA Image API Error:', response.status, errorText);
+            throw new Error(`Image generation failed: ${response.status} - ${errorText || response.statusText}`);
+          }
+
+          const data = await response.json();
+          console.log('[AiEngine] Image generation response:', JSON.stringify(data).substring(0, 200));
+
+          if (data.images && data.images.length > 0) {
+            return `data:image/png;base64,${data.images[0]}`;
+          }
+          if (data.image) {
+            return `data:image/png;base64,${data.image}`;
+          }
+          if (Array.isArray(data.artifacts) && data.artifacts.length > 0) {
+            const artifact = data.artifacts[0];
+            if (artifact?.base64) {
+              const mimeType = artifact.mime_type || artifact.mimeType || 'image/jpeg';
+              return `data:${mimeType};base64,${artifact.base64}`;
+            }
+            if (artifact?.url) {
+              return artifact.url;
+            }
+          }
+          if (data.uri) {
+            return data.uri;
+          }
+
+          throw new Error('Image generation failed: NVIDIA response did not contain an image');
+        } catch (error) {
+          const isAbort = error instanceof Error && error.name === 'AbortError';
+          lastError = isAbort
+            ? new Error(`Image generation timed out after ${timeoutMs}ms on ${invokeUrl}`)
+            : error instanceof Error ? error : new Error(String(error));
+          console.error(`[AiEngine] Image generation attempt ${attempt}/${maxAttempts} failed:`, lastError.message);
+        } finally {
+          clearTimeout(timeout);
+        }
       }
-
-      const data = await response.json();
-      console.log('[AiEngine] Image generation response:', JSON.stringify(data).substring(0, 200));
-
-      // FLUX returns base64 encoded image in 'images' array or 'image' field
-      if (data.images && data.images.length > 0) {
-        const base64Image = data.images[0];
-        // Return as data URL for frontend to use
-        return `data:image/png;base64,${base64Image}`;
-      } else if (data.image) {
-        const base64Image = data.image;
-        return `data:image/png;base64,${base64Image}`;
-      } else if (data.uri) {
-        // Some models return a URI
-        return data.uri;
-      } else {
-        console.warn('[AiEngine] No image in response, returning placeholder');
-        return `https://placehold.co/${size}/F59E0B/FFFFFF?text=No+Image+Generated`;
-      }
-    } catch (error) {
-      console.error('[AiEngine] Error generating image:', error);
-      // Return placeholder on exception
-      return `https://placehold.co/${size}/EF4444/FFFFFF?text=Error+Generating+Image`;
     }
+
+    throw lastError || new Error('Image generation failed');
   }
 
   async generateBranding(options: GenerateBrandingOptions): Promise<{
@@ -250,38 +281,167 @@ STRICT RULES:
     colorPalette: string;
     typography: string;
     description: string;
+    personality?: string;
+    logoConcept?: string;
+    visualStyle?: string;
+    messagingAngle?: string;
   }> {
-    const { brandName, industry = 'technology' } = options;
+    const model = process.env.NVIDIA_NIM_BRANDING_MODEL || 'z-ai/glm-5.2';
+    const values = Array.isArray(options.values)
+      ? options.values
+      : typeof options.values === 'string'
+        ? [options.values]
+        : [];
+    const system = `You are a senior brand strategist, naming director, and identity designer.
+Return only strict JSON. No markdown, no comments, no prose before or after the JSON.
+The JSON must contain these string fields: tagline, mission, vision, colorPalette, typography, description, personality, logoConcept, visualStyle, messagingAngle.
+colorPalette must be exactly 3 accessible hex colors separated by commas. Avoid generic startup blue unless the brief demands it.
+typography must be exactly 2 real font family names separated by a comma.
+Create a bespoke brand identity based only on the user's brief. Avoid generic words like leader, exceptional, innovative, solution unless made specific by the brief.
+Make it feel like a premium brand system from an expert identity studio: strategic, concrete, differentiated, and visually actionable.`;
+    const prompt = `Generate a premium brand identity platform in French.
+Brand name: ${options.brandName}
+Industry: ${options.industry || ''}
+Description: ${options.description || ''}
+Style: ${options.style || ''}
+Values: ${values.map(value => String(value).trim()).filter(Boolean).join(', ')}
 
-    const industries: Record<string, { taglines: string[]; colors: string[] }> = {
-      technology: {
-        taglines: ['Innovating the Future', 'Technology for Tomorrow', 'Digital Transformation'],
-        colors: ['#3B82F6', '#1E40AF', '#60A5FA'],
-      },
-      fashion: {
-        taglines: ['Style Redefined', 'Elegance in Every Thread', 'Fashion Forward'],
-        colors: ['#EC4899', '#BE185D', '#FCE7F3'],
-      },
-      food: {
-        taglines: ['Taste the Difference', 'Fresh & Delicious', 'Culinary Excellence'],
-        colors: ['#F59E0B', '#D97706', '#FEF3C7'],
-      },
-      health: {
-        taglines: ['Wellness First', 'Healthy Living', 'Care for Life'],
-        colors: ['#10B981', '#059669', '#D1FAE5'],
-      },
-    };
+Creative requirements:
+- Find a distinct positioning, not a generic company description.
+- Tagline: short, ownable, 4 to 9 words, no cliché.
+- Mission and vision: concrete, premium, useful for a SaaS/tech landing page.
+- Palette: 3 hex colors with roles: primary, background/neutral, accent.
+- Typography: one expressive heading font and one highly readable body font.
+- logoConcept: describe one simple visual symbol that can become a logo mark.
+- visualStyle: give a concise art direction for UI, website, posters, and logo.
+- messagingAngle: one sentence explaining the brand's sharp commercial promise.
 
-    const industryData = industries[industry] || industries.technology;
+Return JSON only:
+{
+  "tagline": "...",
+  "mission": "...",
+  "vision": "...",
+  "colorPalette": "#000000, #FFFFFF, #C27A2C",
+  "typography": "Heading Font, Body Font",
+  "description": "...",
+  "personality": "...",
+  "logoConcept": "...",
+  "visualStyle": "...",
+  "messagingAngle": "..."
+}`;
 
-    return {
-      tagline: industryData.taglines[Math.floor(Math.random() * industryData.taglines.length)],
-      mission: `Our mission is to deliver exceptional ${industry} solutions that empower our customers and transform their experience.`,
-      vision: `To be the leading ${industry} brand recognized for innovation, quality, and customer success.`,
-      colorPalette: industryData.colors.join(', '),
-      typography: 'Inter, Poppins, Roboto',
-      description: `${brandName} is a leading ${industry} company dedicated to delivering exceptional products and services.`,
-    };
+    let lastError: Error | null = null;
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      try {
+        const response = await this.generateText({
+          prompt: `${prompt}${attempt > 1 ? `\nPrevious attempt failed: ${lastError?.message}. Return only a smaller valid JSON object with the exact required fields.` : ''}`,
+          tone: 'expert',
+          length: 'LONG',
+          language: 'français',
+          maxTokens: 2048,
+        }, model, system);
+
+        const parsed = this.parseBrandingJson(response);
+        const required = ['tagline', 'mission', 'vision', 'colorPalette', 'typography', 'description'];
+        const missing = required.filter(field => typeof parsed[field] !== 'string' || !parsed[field].trim());
+        if (missing.length) {
+          throw new Error(`Branding AI response is missing required fields: ${missing.join(', ')}`);
+        }
+
+        const colors = this.extractHexColors(parsed.colorPalette);
+        if (colors.length !== 3) {
+          throw new Error('Branding AI returned an invalid colorPalette. Expected exactly 3 hex colors.');
+        }
+
+        const fonts = String(parsed.typography).split(',').map((font: string) => font.trim()).filter(Boolean);
+        if (fonts.length < 2) {
+          throw new Error('Branding AI returned invalid typography. Expected heading and body fonts.');
+        }
+
+        return {
+          tagline: parsed.tagline.trim(),
+          mission: parsed.mission.trim(),
+          vision: parsed.vision.trim(),
+          colorPalette: colors.join(', '),
+          typography: fonts.slice(0, 2).join(', '),
+          description: parsed.description.trim(),
+          personality: typeof parsed.personality === 'string' ? parsed.personality.trim() : '',
+          logoConcept: typeof parsed.logoConcept === 'string' ? parsed.logoConcept.trim() : '',
+          visualStyle: typeof parsed.visualStyle === 'string' ? parsed.visualStyle.trim() : '',
+          messagingAngle: typeof parsed.messagingAngle === 'string' ? parsed.messagingAngle.trim() : '',
+        };
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+        console.warn(`[AI Engine] Branding generation attempt ${attempt}/2 failed: ${lastError.message}`);
+      }
+    }
+
+    throw lastError || new Error('Branding AI generation failed');
+  }
+
+  private parseBrandingJson(response: string): any {
+    const candidate = this.extractJsonObject(response);
+    if (!candidate) {
+      throw new Error('Branding AI response did not contain a JSON object');
+    }
+
+    const cleaned = candidate.replace(/,\s*([}\]])/g, '$1').trim();
+    const attempts = new Set<string>([candidate, cleaned]);
+    const openBraces = (cleaned.match(/{/g) || []).length;
+    const closeBraces = (cleaned.match(/}/g) || []).length;
+    if (openBraces > closeBraces) {
+      attempts.add(`${cleaned}${'}'.repeat(openBraces - closeBraces)}`.replace(/,\s*([}\]])/g, '$1'));
+    }
+
+    const errors: string[] = [];
+    for (const attempt of attempts) {
+      try {
+        return JSON.parse(attempt);
+      } catch (error) {
+        errors.push(error instanceof Error ? error.message : String(error));
+      }
+    }
+
+    throw new Error(`Branding AI returned invalid JSON: ${errors.slice(0, 2).join(' | ')}`);
+  }
+
+  private extractHexColors(value: string): string[] {
+    return Array.from(new Set(String(value).match(/#[0-9a-f]{6}\b/gi) || []))
+      .map(color => color.toUpperCase())
+      .slice(0, 3);
+  }
+
+  private extractJsonObject(response: string): string | null {
+    const fencedJson = response.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1];
+    const source = fencedJson || response;
+    const firstBrace = source.indexOf('{');
+    if (firstBrace === -1) return null;
+
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+
+    for (let index = firstBrace; index < source.length; index += 1) {
+      const char = source[index];
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (char === '\\') {
+        escaped = true;
+        continue;
+      }
+      if (char === '"') {
+        inString = !inString;
+        continue;
+      }
+      if (inString) continue;
+      if (char === '{') depth += 1;
+      if (char === '}') depth -= 1;
+      if (depth === 0) return source.slice(firstBrace, index + 1);
+    }
+
+    return source.slice(firstBrace);
   }
 
   async generateSocialPost(options: GenerateSocialPostOptions): Promise<string> {
@@ -675,10 +835,36 @@ STRICT RULES:
   }
 
   async generateLogo(options: { brandName: string; industry?: string; style?: string; logoDescription?: string; primaryColor?: string; secondaryColor?: string; accentColor?: string }): Promise<string> {
-    const { brandName, primaryColor = '#3B82F6', secondaryColor = '#1E3A5F', accentColor = '#F59E0B' } = options;
-    const initials = brandName.split(/\s+/).map(w => w[0]).join('').toUpperCase().slice(0, 3);
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512"><defs><linearGradient id="bg"><stop offset="0%" stop-color="${primaryColor}"/><stop offset="100%" stop-color="${secondaryColor}"/></linearGradient></defs><rect width="512" height="512" rx="80" fill="url(#bg)"/><circle cx="256" cy="200" r="60" fill="none" stroke="${accentColor}" stroke-width="6"/><text x="256" y="340" text-anchor="middle" font-family="Inter" font-size="72" font-weight="800" fill="white">${initials}</text></svg>`;
-    return `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
+    const {
+      brandName,
+      industry = 'business',
+      style = 'modern',
+      logoDescription = '',
+      primaryColor,
+      secondaryColor,
+      accentColor,
+    } = options;
+    const prompt = [
+      `Premium vector-like brand symbol for "${brandName}".`,
+      `${industry} identity, ${style} style, expert logo design.`,
+      primaryColor && secondaryColor && accentColor
+        ? `Palette: ${primaryColor}, ${secondaryColor}, ${accentColor}.`
+        : '',
+      logoDescription ? `Symbol concept: ${logoDescription.slice(0, 220)}.` : '',
+      'Create one simple memorable abstract mark, clear silhouette, balanced negative space, scalable geometry, refined proportions, centered on a clean flat background. No words, no letters, no initials, no watermark, no mockup, no 3D render, no extra readable text.',
+    ].filter(Boolean).join(' ');
+
+    const logoUrl = await this.generateImage({
+      prompt,
+      size: '768x768',
+      style,
+    });
+
+    if (/placehold\.co|Image\+Generation\+Failed|No\+Image\+Generated|Error\+Generating\+Image/i.test(logoUrl)) {
+      throw new Error('Logo image generation failed');
+    }
+
+    return logoUrl;
   }
 
   async generateWebsiteContentJson(options: any): Promise<any> {

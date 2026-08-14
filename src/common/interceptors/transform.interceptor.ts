@@ -3,6 +3,7 @@ import {
   NestInterceptor,
   ExecutionContext,
   CallHandler,
+  StreamableFile,
 } from '@nestjs/common';
 import { Observable } from 'rxjs';
 import { map } from 'rxjs/operators';
@@ -22,11 +23,17 @@ export class TransformInterceptor<T>
     next: CallHandler,
   ): Observable<Response<T>> {
     return next.handle().pipe(
-      map((data) => ({
-        data,
-        statusCode: context.switchToHttp().getResponse().statusCode,
-        timestamp: new Date().toISOString(),
-      })),
+      map((data) => {
+        // Don't wrap binary/stream/file responses — they need raw bytes
+        if (data instanceof StreamableFile || Buffer.isBuffer(data)) {
+          return data as any;
+        }
+        return {
+          data,
+          statusCode: context.switchToHttp().getResponse().statusCode,
+          timestamp: new Date().toISOString(),
+        };
+      }),
     );
   }
 }

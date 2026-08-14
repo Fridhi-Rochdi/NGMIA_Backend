@@ -256,7 +256,7 @@ export class GenerateImageOptions {
 
   @IsOptional()
   @IsEnum(['256x256', '512x512', '1024x1024'])
-  size?: '256x256' | '512x512' | '1024x1024';
+  size?: '256x256' | '512x512' | '768x768' | '1024x1024';
 
   @IsOptional()
   @IsString()

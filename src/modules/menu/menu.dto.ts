@@ -1,4 +1,4 @@
-import { IsString, IsOptional, IsArray, ValidateNested, IsEnum, IsInt, Min, Max, IsNumber } from 'class-validator';
+import { IsString, IsOptional, IsArray, ValidateNested, IsEnum } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export enum MenuBusinessType {
@@ -36,6 +36,10 @@ export class MenuItemDto {
   @IsString()
   @IsOptional()
   image?: string;
+
+  @IsString()
+  @IsOptional()
+  imageUrl?: string;
 }
 
 export class MenuCategoryDto {
@@ -50,28 +54,6 @@ export class MenuCategoryDto {
   @ValidateNested({ each: true })
   @Type(() => MenuItemDto)
   items: MenuItemDto[];
-}
-
-export class FontSizesDto {
-  @IsNumber()
-  @IsOptional()
-  title?: number;
-
-  @IsNumber()
-  @IsOptional()
-  category?: number;
-
-  @IsNumber()
-  @IsOptional()
-  item?: number;
-
-  @IsNumber()
-  @IsOptional()
-  description?: number;
-
-  @IsNumber()
-  @IsOptional()
-  price?: number;
 }
 
 export class MenuColorsDto {
@@ -92,12 +74,16 @@ export class MenuGenerationDto {
   @IsString()
   businessName: string;
 
-  @IsEnum(MenuBusinessType)
-  businessType: MenuBusinessType;
+  @IsString()
+  businessType: string;
 
   @IsString()
   @IsOptional()
   description?: string;
+
+  @IsArray()
+  @IsOptional()
+  images?: { url: string; name: string }[];
 
   @IsArray()
   @ValidateNested({ each: true })
@@ -107,28 +93,23 @@ export class MenuGenerationDto {
 
   @IsString()
   @IsOptional()
-  template?: MenuTemplate;
+  template?: string;
 
-  @ValidateNested()
-  @Type(() => MenuColorsDto)
+  @IsString()
   @IsOptional()
-  colors?: MenuColorsDto;
+  primaryColor?: string;
+
+  @IsString()
+  @IsOptional()
+  secondaryColor?: string;
+
+  @IsString()
+  @IsOptional()
+  accentColor?: string;
 
   @IsString()
   @IsOptional()
   fontFamily?: string;
-
-  @ValidateNested()
-  @Type(() => FontSizesDto)
-  @IsOptional()
-  fontSizes?: FontSizesDto;
-
-  @IsInt()
-  @Min(1)
-  @Max(20)
-  @IsOptional()
-  @Type(() => Number)
-  pageCount?: number;
 }
 
 export class MenuUpdateDto {
@@ -144,19 +125,21 @@ export class MenuUpdateDto {
 
   @IsString()
   @IsOptional()
-  template?: MenuTemplate;
+  template?: string;
 
-  @ValidateNested()
-  @Type(() => MenuColorsDto)
+  @IsString()
   @IsOptional()
-  colors?: MenuColorsDto;
+  primaryColor?: string;
+
+  @IsString()
+  @IsOptional()
+  secondaryColor?: string;
+
+  @IsString()
+  @IsOptional()
+  accentColor?: string;
 
   @IsString()
   @IsOptional()
   fontFamily?: string;
-
-  @ValidateNested()
-  @Type(() => FontSizesDto)
-  @IsOptional()
-  fontSizes?: FontSizesDto;
 }

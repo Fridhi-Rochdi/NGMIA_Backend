@@ -1,5 +1,6 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsString, IsOptional, IsEnum } from 'class-validator';
+import { IsString, IsOptional, IsEnum, IsArray } from 'class-validator';
+import { Transform } from 'class-transformer';
 
 export class GenerateBrandingDto {
   @ApiProperty()
@@ -16,11 +17,33 @@ export class GenerateBrandingDto {
 
   @ApiProperty({ enum: ['modern', 'classic', 'playful', 'luxurious', 'tech'], required: false })
   @IsOptional()
+  @Transform(({ value }) => {
+    if (value === undefined || value === null || value === '') return undefined;
+    const normalized = String(value).trim().toLowerCase();
+    const aliases: Record<string, string> = {
+      luxury: 'luxurious',
+      luxe: 'luxurious',
+      professional: 'modern',
+      professionnel: 'modern',
+      elegant: 'luxurious',
+      elegante: 'luxurious',
+      élégant: 'luxurious',
+      technologique: 'tech',
+    };
+    return aliases[normalized] || normalized;
+  })
   @IsEnum(['modern', 'classic', 'playful', 'luxurious', 'tech'])
   style?: string;
 
   @ApiProperty({ type: [String], required: false })
   @IsOptional()
+  @Transform(({ value }) => {
+    if (value === undefined || value === null || value === '') return undefined;
+    if (Array.isArray(value)) return value.map(item => String(item).trim()).filter(Boolean);
+    return String(value).split(',').map(item => item.trim()).filter(Boolean);
+  })
+  @IsArray()
+  @IsString({ each: true })
   values?: string[];
 }
 

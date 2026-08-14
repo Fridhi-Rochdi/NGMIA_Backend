@@ -1,7 +1,9 @@
-import { Injectable, NotFoundException, Logger } from '@nestjs/common';
+import { Injectable, NotFoundException, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { AiEngineService } from '../ai-engine/ai-engine.service';
 import { GenerateBrandingDto, UpdateBrandingDto, RegenerateLogoDto } from './branding.dto';
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const sharp = require('sharp');
 
 @Injectable()
 export class BrandingService {
@@ -20,27 +22,43 @@ export class BrandingService {
   async generateBranding(userId: string, tenantId: string, dto: GenerateBrandingDto) {
     this.logger.log(`Generating branding for "${dto.brandName}" (${dto.industry})`);
 
-    // Step 1: Generate brand strategy via LLM
-    const branding = await this.aiEngine.generateBranding({
-      brandName: dto.brandName,
-      industry: dto.industry,
-      description: dto.description,
-      style: dto.style || 'modern',
-      values: dto.values,
-    });
+    let branding: Awaited<ReturnType<AiEngineService['generateBranding']>>;
+    try {
+      branding = await this.aiEngine.generateBranding({
+        brandName: dto.brandName,
+        industry: dto.industry,
+        description: dto.description,
+        style: dto.style || 'modern',
+        values: dto.values,
+      });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      this.logger.error(`Brand strategy generation failed: ${reason}`);
+      throw new ServiceUnavailableException(
+        `La génération IA du branding a échoué: ${reason}. Aucune identité par défaut n'a été créée; veuillez réessayer.`,
+      );
+    }
 
     this.logger.log(`Brand strategy generated — palette: ${branding.colorPalette}`);
 
-    // Extract primary/secondary/accent colors from the palette
     const colorArray = branding.colorPalette.split(',').map(c => c.trim());
-    const primaryColor = colorArray[0] || '#3B82F6';
-    const secondaryColor = colorArray[1] || '#1E3A5F';
-    const accentColor = colorArray[2] || '#F59E0B';
+    if (colorArray.length !== 3 || colorArray.some(color => !/^#[0-9a-f]{6}$/i.test(color))) {
+      this.logger.error(`Invalid AI color palette: ${branding.colorPalette}`);
+      throw new ServiceUnavailableException(
+        `La génération IA du branding a retourné une palette invalide: ${branding.colorPalette}. Aucune identité par défaut n'a été créée; veuillez réessayer.`,
+      );
+    }
+    const [primaryColor, secondaryColor, accentColor] = colorArray;
 
     // Step 2: Generate logo via NVIDIA NIM IMAGE GENERATION API (real PNG/SVG)
-    let logoUrl: string | null = null;
+    let logoUrl: string;
     try {
-      const logoDesc = branding.description || dto.description || `${dto.brandName} ${dto.industry || ''} logo`;
+      const logoDesc = [
+        branding.logoConcept,
+        branding.visualStyle,
+        branding.personality,
+        branding.messagingAngle,
+      ].filter(Boolean).join(' ');
       logoUrl = await this.aiEngine.generateLogo({
         brandName: dto.brandName,
         industry: dto.industry,
@@ -50,11 +68,14 @@ export class BrandingService {
         secondaryColor,
         accentColor,
       });
-      const logoType = logoUrl.startsWith('data:image/png') ? 'PNG (image API)' : 'SVG (fallback)';
+      const logoType = logoUrl.startsWith('data:image/png') ? 'PNG image API' : 'image API';
       this.logger.log(`Logo generated successfully via ${logoType} (${logoUrl.substring(0, 50)}...)`);
     } catch (error) {
-      this.logger.error(`Logo generation failed, continuing without logo: ${error}`);
-      // Branding without logo is still usable — user can regenerate later
+      const reason = error instanceof Error ? error.message : String(error);
+      this.logger.error(`Logo generation failed: ${reason}`);
+      throw new ServiceUnavailableException(
+        `La génération IA du logo a échoué: ${reason}. Aucune identité par défaut n'a été créée; veuillez réessayer.`,
+      );
     }
 
     // Generate unique slug (append timestamp to avoid duplicates)
@@ -65,6 +86,12 @@ export class BrandingService {
     const slug = `${baseSlug}-${Date.now()}`;
 
     const [headingFont, bodyFont] = branding.typography.split(',').map(f => f.trim());
+    if (!headingFont || !bodyFont) {
+      this.logger.error(`Invalid AI typography: ${branding.typography}`);
+      throw new ServiceUnavailableException(
+        `La génération IA du branding a retourné une typographie invalide: ${branding.typography}. Aucune identité par défaut n'a été créée; veuillez réessayer.`,
+      );
+    }
 
     const brand = await this.prisma.brand.create({
       data: {
@@ -78,7 +105,7 @@ export class BrandingService {
         primaryColor,
         secondaryColor,
         accentColor,
-        fontFamily: headingFont || 'Inter',
+        fontFamily: headingFont,
         tenantId,
       },
     });
@@ -90,7 +117,10 @@ export class BrandingService {
         vision: branding.vision,
         colorPalette: colorArray,
         typography: { heading: headingFont, body: bodyFont },
-        logoDescription: branding.description || dto.description,
+        personality: branding.personality,
+        visualStyle: branding.visualStyle,
+        messagingAngle: branding.messagingAngle,
+        logoDescription: branding.logoConcept || branding.description || dto.description,
         hasLogo: !!logoUrl,
       },
     };
@@ -136,6 +166,7 @@ export class BrandingService {
   /**
    * Download the logo in the requested format.
    * Converts the stored data URI to a raw buffer with proper MIME type.
+   * Supports: base64 data URIs (PNG/JPEG/WEBP), SVG text, double-prefixed URIs, plain URLs.
    */
   async downloadLogo(id: string, tenantId: string, format: string) {
     const brand = await this.findOne(id, tenantId);
@@ -145,45 +176,99 @@ export class BrandingService {
     }
 
     const logoDataUri = brand.logo;
+    let buffer: Buffer;
+    let originalMime: string;
 
-    // Parse the data URI: data:image/svg+xml;base64,XXXXX or data:image/jpeg;base64,XXXXX
-    const match = logoDataUri.match(/^data:(image\/[^;]+);base64,(.+)$/);
-    
-    if (!match) {
-      throw new Error('Format de logo invalide. Régénérez le logo.');
+    // --- Case 1: Base64 data URI (e.g., data:image/png;base64,iVBOR...) ---
+    // Use [\s\S]+ instead of .+ to match base64 across multiple lines
+    const base64Match = logoDataUri.match(/^data:(image\/[^;]+);base64,([\s\S]+)$/i);
+    if (base64Match) {
+      originalMime = base64Match[1].toLowerCase();
+      let rawBase64 = base64Match[2].replace(/\s+/g, '');
+
+      // Handle double-prefixed data URIs (data:image/png;base64,data:image/png;base64,...)
+      const doublePrefixMatch = rawBase64.match(/^data:image\/[^;]+;base64,([\s\S]+)$/i);
+      if (doublePrefixMatch) {
+        this.logger.warn('Detected double-prefixed data URI, unwrapping inner base64');
+        rawBase64 = doublePrefixMatch[1].replace(/\s+/g, '');
+      }
+
+      buffer = Buffer.from(rawBase64, 'base64');
+      this.logger.log(`Decoded base64 logo: ${originalMime}, raw=${rawBase64.length} chars → buffer=${buffer.length} bytes`);
+
+      if (buffer.length === 0) {
+        throw new Error('Le logo décodé est vide. Le format base64 est peut-être corrompu. Régénérez le logo.');
+      }
+    } else {
+      // --- Case 2: SVG text data URI (data:image/svg+xml,<svg>...) without base64 ---
+      const svgTextMatch = logoDataUri.match(/^data:image\/svg\+xml,([\s\S]+)$/i);
+      if (svgTextMatch) {
+        originalMime = 'image/svg+xml';
+        const svgContent = decodeURIComponent(svgTextMatch[1]);
+        buffer = Buffer.from(svgContent, 'utf-8');
+        this.logger.log(`Decoded SVG text logo: ${buffer.length} bytes`);
+      } else if (/^<svg[\s\S]*<\/svg>\s*$/i.test(logoDataUri.trim())) {
+        // --- Case 3: Raw SVG string ---
+        originalMime = 'image/svg+xml';
+        buffer = Buffer.from(logoDataUri.trim(), 'utf-8');
+        this.logger.log(`Raw SVG logo: ${buffer.length} bytes`);
+      } else if (/^https?:\/\//i.test(logoDataUri)) {
+        // --- Case 4: Plain URL ---
+        this.logger.log(`Fetching logo from URL: ${logoDataUri.substring(0, 80)}...`);
+        try {
+          const response = await fetch(logoDataUri);
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const arrayBuffer = await response.arrayBuffer();
+          buffer = Buffer.from(arrayBuffer);
+          const contentType = response.headers.get('content-type') || 'image/png';
+          originalMime = contentType.split(';')[0].trim().toLowerCase();
+          this.logger.log(`Fetched logo from URL: ${buffer.length} bytes, mime=${originalMime}`);
+        } catch (fetchError) {
+          this.logger.error(`Failed to fetch logo URL: ${fetchError}`);
+          throw new Error('Impossible de télécharger le logo depuis l\'URL distante. Régénérez le logo.');
+        }
+      } else {
+        this.logger.error(`Unrecognized logo format. Starts with: ${logoDataUri.substring(0, 60)}`);
+        throw new Error('Format de logo invalide. Régénérez le logo.');
+      }
     }
 
-    const originalMime = match[1]; // e.g., "image/svg+xml" or "image/jpeg"
-    const base64Data = match[2];
-    let buffer = Buffer.from(base64Data, 'base64');
+    // --- Format conversion ---
+    const targetFormat = (format || 'original').toLowerCase();
+    const extensionByMime: Record<string, string> = {
+      'image/png': 'png',
+      'image/jpeg': 'jpg',
+      'image/jpg': 'jpg',
+      'image/webp': 'webp',
+      'image/svg+xml': 'svg',
+    };
 
-    // Determine output format
-    let mimeType: string;
-    let extension: string;
+    let mimeType = originalMime;
+    let extension = extensionByMime[originalMime] || originalMime.split('/')[1] || 'png';
 
-    switch (format.toLowerCase()) {
-      case 'svg':
-        // SVG can only be returned if the original is SVG
-        if (originalMime.includes('svg')) {
-          mimeType = 'image/svg+xml';
-          extension = 'svg';
-        } else {
-          // Return JPEG as fallback
-          mimeType = 'image/jpeg';
-          extension = 'jpg';
+    // Only attempt sharp conversion for raster formats (not SVG)
+    if (targetFormat !== 'original' && originalMime !== 'image/svg+xml') {
+      const formatMap: Record<string, { mime: string; ext: string }> = {
+        png: { mime: 'image/png', ext: 'png' },
+        jpg: { mime: 'image/jpeg', ext: 'jpg' },
+        jpeg: { mime: 'image/jpeg', ext: 'jpg' },
+        webp: { mime: 'image/webp', ext: 'webp' },
+      };
+      const target = formatMap[targetFormat];
+      if (target && target.ext !== extension) {
+        try {
+          this.logger.log(`Converting logo from ${extension} to ${target.ext}`);
+          buffer = await sharp(buffer)
+            .toFormat(target.ext as 'png' | 'jpeg' | 'webp')
+            .toBuffer();
+          mimeType = target.mime;
+          extension = target.ext;
+          this.logger.log(`Converted logo: ${buffer.length} bytes`);
+        } catch (convError) {
+          this.logger.error(`Format conversion failed (${extension}→${target.ext}): ${convError}. Sending original format.`);
+          // Fall back to original format
         }
-        break;
-      case 'jpeg':
-      case 'jpg':
-        mimeType = 'image/jpeg';
-        extension = 'jpg';
-        // If original is SVG, keep the raw SVG data (browser will render it)
-        break;
-      case 'png':
-      default:
-        mimeType = 'image/png';
-        extension = 'png';
-        break;
+      }
     }
 
     this.logger.log(`Downloading logo for brand "${brand.name}" as ${extension} (${buffer.length} bytes)`);

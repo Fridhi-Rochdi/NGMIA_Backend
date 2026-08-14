@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { AiEngineService } from '../ai-engine/ai-engine.service';
 import { GenerateImageDto, UpdateImageDto, ImageBusinessType, ImageTemplate } from './images.dto';
@@ -51,10 +51,11 @@ export class ImagesService {
         finalPrompt = enhancedPrompt;
         console.log('[ImagesService] AI generated prompt:', finalPrompt);
       } catch (error) {
-        console.error('[ImagesService] AI prompt generation failed:', error);
-        enhancedPrompt = this.generateDefaultPrompt(dto.businessType, dto.template || ImageTemplate.MODERN);
-        finalPrompt = enhancedPrompt;
-        console.log('[ImagesService] Using fallback prompt:', finalPrompt);
+        const reason = error instanceof Error ? error.message : String(error);
+        console.error('[ImagesService] AI prompt generation failed:', reason);
+        throw new ServiceUnavailableException(
+          `La génération IA du prompt image a échoué: ${reason}. Aucune image par défaut n'a été créée; veuillez réessayer.`,
+        );
       }
     } else {
       console.log('[ImagesService] Using user-provided prompt:', finalPrompt);
@@ -62,11 +63,20 @@ export class ImagesService {
 
     // Step 2: Generate the actual image
     console.log('[ImagesService] Calling aiEngine.generateImage()...');
-    const imageUrl = await this.aiEngine.generateImage({
-      prompt: finalPrompt,
-      size: sizeMap[dto.aspectRatio || 'SQUARE'] || '512x512',
-      style: dto.style || 'realistic',
-    });
+    let imageUrl: string;
+    try {
+      imageUrl = await this.aiEngine.generateImage({
+        prompt: finalPrompt,
+        size: sizeMap[dto.aspectRatio || 'SQUARE'] || '512x512',
+        style: dto.style || 'realistic',
+      });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      console.error('[ImagesService] Image generation failed:', reason);
+      throw new ServiceUnavailableException(
+        `La génération IA de l'image a échoué: ${reason}. Aucune image par défaut n'a été créée; veuillez réessayer.`,
+      );
+    }
 
     // Step 3: Store with full context
     return this.prisma.image.create({
@@ -194,38 +204,10 @@ Réponds UNIQUEMENT avec le prompt en anglais, sans texte avant ou après.`;
     
     // Clean the response
     const cleaned = response.trim().replace(/^["']|["']$/g, '');
-    return cleaned || this.generateDefaultPrompt(dto.businessType, dto.template || ImageTemplate.MODERN);
-  }
+    if (!cleaned) {
+      throw new Error('AI prompt generation returned an empty prompt');
+    }
 
-  private generateDefaultPrompt(businessType: ImageBusinessType, template: ImageTemplate): string {
-    const templateStyle = {
-      [ImageTemplate.MODERN]: 'modern, clean, professional',
-      [ImageTemplate.CLASSIC]: 'classic, timeless, elegant',
-      [ImageTemplate.MINIMAL]: 'minimalist, lots of negative space, clean design',
-      [ImageTemplate.BOLD]: 'bold colors, dynamic, eye-catching',
-      [ImageTemplate.ELEGANT]: 'luxurious, sophisticated, premium, gold accents',
-      [ImageTemplate.RUSTIC]: 'artisanal, warm, wood textures, natural',
-    }[template] || 'modern, professional';
-
-    const businessPrompts: Record<ImageBusinessType, string> = {
-      [ImageBusinessType.RESTAURANT]: `Elegant restaurant interior with warm lighting, beautifully plated gourmet dishes on wooden tables, ${templateStyle} photography style, shallow depth of field, 4K quality`,
-      [ImageBusinessType.CAFE]: `Cozy cafe interior with natural light, steaming coffee cups, barista at work, ${templateStyle} style, warm tones, inviting atmosphere`,
-      [ImageBusinessType.BAR]: `Sophisticated bar with ambient lighting, crafted cocktails on marble counter, ${templateStyle} mood, bokeh background, high-end photography`,
-      [ImageBusinessType.BAKERY]: `Artisan bakery display with fresh bread and pastries, golden morning light, ${templateStyle} aesthetic, flour-dusted surfaces`,
-      [ImageBusinessType.PIZZERIA]: `Authentic Italian pizzeria with wood-fired oven, fresh pizza on rustic table, ${templateStyle}, steam rising, warm colors`,
-      [ImageBusinessType.SUSHI]: `Elegant Japanese restaurant, artfully arranged sushi platter, ${templateStyle}, minimalist presentation, soft lighting`,
-      [ImageBusinessType.FAST_FOOD]: `Vibrant fast-food restaurant, perfectly styled burgers and fries, ${templateStyle}, bold colors, appetizing shot`,
-      [ImageBusinessType.BURGER]: `Gourmet burger with melting cheese, fresh ingredients, ${templateStyle} food photography, dramatic lighting, 4K`,
-      [ImageBusinessType.ICE_CREAM]: `Artisanal ice cream shop, colorful scoops in waffle cones, ${templateStyle}, summer vibes, natural light`,
-      [ImageBusinessType.RETAIL]: `Modern retail store interior, beautifully arranged products on shelves, ${templateStyle}, bright lighting, inviting display`,
-      [ImageBusinessType.HEALTH]: `Serene wellness center, natural elements, ${templateStyle}, soft lighting, plants, calming atmosphere`,
-      [ImageBusinessType.EDUCATION]: `Modern educational space, bright and inspiring, ${templateStyle}, natural light, collaborative environment`,
-      [ImageBusinessType.REAL_ESTATE]: `Luxurious property exterior, ${templateStyle} real estate photography, golden hour lighting, wide angle, premium`,
-      [ImageBusinessType.EVENT]: `Elegant event setup with ambient lighting, ${templateStyle}, beautifully decorated tables, celebration atmosphere`,
-      [ImageBusinessType.TECH]: `Cutting-edge tech office, ${templateStyle}, blue and white tones, futuristic yet warm, innovation vibe`,
-      [ImageBusinessType.OTHER]: `Professional business marketing image, ${templateStyle}, high quality, corporate aesthetic, 4K`,
-    };
-
-    return businessPrompts[businessType] || businessPrompts[ImageBusinessType.OTHER];
+    return cleaned;
   }
 }
