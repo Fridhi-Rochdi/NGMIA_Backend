@@ -12,49 +12,57 @@ datasource db {
 // ============================================
 
 model Tenant {
-  id          String   @id @default(uuid())
-  name        String
-  slug        String   @unique
-  domain      String?
-  logo        String?
-  plan        Plan     @default(FREE)
-  maxUsers    Int      @default(5)
-  maxProjects Int      @default(3)
-  isActive    Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id               String   @id @default(uuid())
+  name             String
+  slug             String   @unique
+  domain           String?
+  logo             String?
+  plan             Plan     @default(FREE)
+  stripeCustomerId String?  @unique
+  maxUsers         Int      @default(5)
+  maxProjects      Int      @default(3)
+  isActive         Boolean  @default(true)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 
-  users       User[]
-  brands      Brand[]
-  contents    Content[]
-  images      Image[]
-  calendars   Calendar[]
-  socialAccounts SocialAccount[]
-  subscription Subscription?
-  paymentMethods PaymentMethod[]
-  websites      Website[]
-  menus         Menu[]
-  posters       Poster[]
-  qrCodes       QrCode[]
+  users           User[]
+  brands          Brand[]
+  businessContext BusinessContext?
+  contents        Content[]
+  images          Image[]
+  calendars       Calendar[]
+  socialAccounts  SocialAccount[]
+  subscription    Subscription?
+  paymentMethods  PaymentMethod[]
+  reels           Reel[]
+  websites        Website[]
+  menus           Menu[]
+  aiUsage         AiUsage[]
+  posters         Poster[]
+  qrCodes         QrCode[]
 
   @@map("tenants")
 }
 
 model User {
-  id            String    @id @default(uuid())
+  id            String   @id @default(uuid())
   email         String
   password      String
   firstName     String?
   lastName      String?
   avatar        String?
-  role          UserRole  @default(MEMBER)
-  isActive      Boolean   @default(true)
-  emailVerified Boolean   @default(false)
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  role          UserRole @default(MEMBER)
+  // Platform operator (the /admin console). Deliberately NOT a UserRole:
+  // OWNER/ADMIN/MEMBER are roles *inside a tenant*, and a tenant admin must
+  // never inherit access to every other tenant's data.
+  isSuperAdmin  Boolean  @default(false)
+  isActive      Boolean  @default(true)
+  emailVerified Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
-  tenantId      String
-  tenant        Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   contents      Content[]
   images        Image[]
@@ -63,37 +71,177 @@ model User {
   menus         Menu[]
   posters       Poster[]
   qrCodes       QrCode[]
+  otpChallenges OtpChallenge[]
+  refreshTokens RefreshToken[]
+  reels         Reel[]
 
   @@unique([email, tenantId])
   @@map("users")
 }
 
+// One row per billable AI generation. The monthly quota of a tenant's plan is
+// the sum of `credits` since the start of the current month.
+model AiUsage {
+  id        String   @id @default(uuid())
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userId    String?
+  feature   String
+  credits   Int
+  createdAt DateTime @default(now())
+
+  @@index([tenantId, createdAt])
+  @@map("ai_usage")
+}
+
 // ============================================
-// Branding Module
+// Authentication — second factor and session renewal
 // ============================================
 
+// A one-time code issued during login.
+//
+// The code itself is never stored: only a SHA-256 hash of (code + pepper), so
+// a database leak does not hand out working codes. Exactly one challenge per
+// user is usable at a time — issuing a new one supersedes the previous, which
+// is what makes "only the last code works" true rather than aspirational.
+model OtpChallenge {
+  id     String @id @default(uuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// SHA-256 of the 6-digit code plus OTP_PEPPER. Never the code itself.
+  codeHash String
+  purpose  String @default("LOGIN")
+
+  expiresAt    DateTime
+  /// Set the moment the code is accepted; a used code can never be replayed.
+  consumedAt   DateTime?
+  /// Set when superseded by a newer challenge for the same user and purpose.
+  supersededAt DateTime?
+
+  attempts    Int      @default(0)
+  maxAttempts Int      @default(5)
+  /// Resends are capped per challenge chain to stop mail-bombing.
+  resendCount Int      @default(0)
+  lastSentAt  DateTime @default(now())
+
+  ip        String?
+  userAgent String?
+
+  createdAt DateTime @default(now())
+
+  @@index([userId, purpose, consumedAt])
+  @@index([expiresAt])
+  @@map("otp_challenges")
+}
+
+// A refresh token, hashed.
+//
+// Rotated on every use: presenting a token invalidates it and issues a new
+// one. A token presented twice means it leaked, so the whole family is revoked
+// rather than silently accepted.
+model RefreshToken {
+  id     String @id @default(uuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// SHA-256 of the opaque token. The raw value only ever leaves in a cookie.
+  tokenHash String @unique
+  /// Groups a rotation chain, so one reuse can revoke every descendant.
+  familyId  String
+
+  expiresAt     DateTime
+  revokedAt     DateTime?
+  /// ROTATED | LOGOUT | REUSE_DETECTED | PASSWORD_CHANGE
+  revokedReason String?
+
+  ip        String?
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([familyId])
+  @@index([expiresAt])
+  @@map("refresh_tokens")
+}
+
+//
+// // ============================================
+// // Branding Module
+// // ============================================
+//
 model Brand {
-  id          String   @id @default(uuid())
-  name        String
-  slug        String
-  logo        String?
-  primaryColor String  @default("#3b82f6")
-  secondaryColor String @default("#1e3a8a")
-  accentColor String   @default("#22c55e")
-  fontFamily  String   @default("Inter")
-  tagline     String?
-  description String?
-  tone        String   @default("professional")
-  industry    String?
+  id             String   @id @default(uuid())
+  name           String
+  slug           String
+  // A stored "/uploads/..." path. This used to hold a ~1 MB base64 data URL,
+  // which was re-inlined into every document that showed the logo.
+  logo           String?
+  // Derived, reusable variants: { mark, light, dark, compact } -> upload paths.
+  logoVariants   Json?
+  primaryColor   String   @default("#3b82f6")
+  secondaryColor String   @default("#1e3a8a")
+  accentColor    String   @default("#22c55e")
+  fontFamily     String   @default("Inter")
+  tagline        String?
+  description    String?
+  // Tone of VOICE for copy. Never a visual style: that is `visualStyle`.
+  tone           String   @default("professional")
+  industry       String?
   targetAudience String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  // The rest of the generated brand platform. Every generator reads these
+  // through the brand context, so the site, the posts and the posters make the
+  // same promise in the same voice.
+  mission        String?
+  vision         String?
+  personality    String?
+  messagingAngle String?
+  voice          String?
+  logoConcept    String?
+  // Art-direction key: MODERN | CLASSIC | MINIMAL | BOLD | ELEGANT | RUSTIC.
+  visualStyle    String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
-  tenantId    String
-  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@unique([slug, tenantId])
   @@map("brands")
+}
+
+// ============================================
+// Business Context — the tenant's single source of truth
+// ============================================
+//
+// One record per tenant, created at signup. Every generation feature reads it
+// so the user never re-enters their business name, sector or tone.
+//
+// Distinct from `Brand`, which is a *generated visual identity kit* and of
+// which a tenant accumulates many (one per branding generation).
+
+model BusinessContext {
+  id             String   @id @default(uuid())
+  businessName   String
+  businessType   String   @default("OTHER")
+  industry       String?
+  description    String   @default("")
+  services       String[] @default([])
+  targetAudience String?
+  tone           String   @default("professional")
+  language       String   @default("fr")
+  currency       String   @default("EUR")
+  contactPhone   String?
+  contactEmail   String?
+  contactAddress String?
+  website        String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  tenantId String @unique
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("business_contexts")
 }
 
 // ============================================
@@ -101,26 +249,26 @@ model Brand {
 // ============================================
 
 model Content {
-  id          String        @id @default(uuid())
-  title       String
-  body        String
-  type        ContentType   @default(POST)
-  platform    Platform?
-  tone        String        @default("professional")
-  length      ContentLength @default(MEDIUM)
-  hashtags    String?
+  id           String        @id @default(uuid())
+  title        String
+  body         String
+  type         ContentType   @default(POST)
+  platform     Platform?
+  tone         String        @default("professional")
+  length       ContentLength @default(MEDIUM)
+  hashtags     String?
   callToAction String?
-  status      ContentStatus @default(DRAFT)
-  aiModel     String        @default("gpt-4-simulated")
-  prompt      String?
-  imageUrl    String?
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
+  status       ContentStatus @default(DRAFT)
+  aiModel      String        @default("gpt-4-simulated")
+  prompt       String?
+  imageUrl     String?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
 
-  tenantId    String
-  tenant      Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  userId      String
-  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userId   String
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("contents")
 }
@@ -130,32 +278,32 @@ model Content {
 // ============================================
 
 model Image {
-  id          String     @id @default(uuid())
-  prompt      String
-  url         String
-  thumbnailUrl String?
-  width       Int?
-  height      Int?
-  style       String     @default("realistic")
-  format      String     @default("png")
-  aiModel     String     @default("dall-e-simulated")
-  status      ImageStatus @default(PENDING)
-  businessName String?
-  businessType String?
-  description  String?
-  template      String?
-  primaryColor  String?
+  id             String      @id @default(uuid())
+  prompt         String
+  url            String
+  thumbnailUrl   String?
+  width          Int?
+  height         Int?
+  style          String      @default("realistic")
+  format         String      @default("png")
+  aiModel        String      @default("dall-e-simulated")
+  status         ImageStatus @default(PENDING)
+  businessName   String?
+  businessType   String?
+  description    String?
+  template       String?
+  primaryColor   String?
   secondaryColor String?
-  accentColor   String?
-  fontFamily    String?
+  accentColor    String?
+  fontFamily     String?
   enhancedPrompt String?
-  createdAt   DateTime   @default(now())
-  updatedAt   DateTime   @updatedAt
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
 
-  tenantId    String
-  tenant      Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  userId      String
-  user        User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userId   String
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("images")
 }
@@ -165,39 +313,55 @@ model Image {
 // ============================================
 
 model Calendar {
-  id          String   @id @default(uuid())
+  id          String    @id @default(uuid())
   name        String
   description String?
   startDate   DateTime
   endDate     DateTime?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
-  tenantId    String
-  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  userId      String
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userId   String
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  events      CalendarEvent[]
+  events CalendarEvent[]
 
   @@map("calendars")
 }
 
 model CalendarEvent {
-  id          String          @id @default(uuid())
+  id          String      @id @default(uuid())
   title       String
   description String?
   platform    Platform?
   scheduledAt DateTime
-  status      EventStatus     @default(SCHEDULED)
+  status      EventStatus @default(SCHEDULED)
   contentId   String?
   imageId     String?
-  createdAt   DateTime        @default(now())
-  updatedAt   DateTime        @updatedAt
 
-  calendarId  String
-  calendar    Calendar        @relation(fields: [calendarId], references: [id], onDelete: Cascade)
+  /// Whether the scheduler may publish this on its own. Off by default: an
+  /// editorial calendar is a proposal until its owner says otherwise, and
+  /// nobody should discover that a draft went out to their audience.
+  autoPublish Boolean   @default(false)
+  /// When it actually went out, as opposed to when it was meant to.
+  publishedAt DateTime?
+  /// The post's id on the platform, so it can be linked to or deleted.
+  externalId  String?
+  /// Why the last attempt failed, shown to the owner rather than swallowed.
+  error       String?
+  /// Publishing attempts so far; the scheduler gives up after a few.
+  attempts    Int       @default(0)
 
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  calendarId String
+  calendar   Calendar @relation(fields: [calendarId], references: [id], onDelete: Cascade)
+
+  /// The scheduler's hot query: everything due, by status and time.
+  @@index([status, scheduledAt])
   @@map("calendar_events")
 }
 
@@ -206,18 +370,31 @@ model CalendarEvent {
 // ============================================
 
 model SocialAccount {
-  id          String         @id @default(uuid())
-  platform    Platform
-  accountId   String
-  username    String
-  accessToken String
+  id           String   @id @default(uuid())
+  platform     Platform
+  accountId    String
+  username     String
+  accessToken  String
   refreshToken String?
-  isActive    Boolean        @default(true)
-  createdAt   DateTime       @default(now())
-  updatedAt   DateTime       @updatedAt
 
-  tenantId    String
-  tenant      Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  /// When the access token stops working. Real platform tokens expire — Meta's
+  /// long-lived page tokens last about 60 days — and without this the app can
+  /// only discover expiry by failing to post.
+  expiresAt DateTime?
+  /// Permissions the user actually granted. Posting fails with a confusing
+  /// error when a scope is missing, so it is worth being able to say which.
+  scope     String?
+  /// Facebook Page or Instagram Business account to publish to. Personal
+  /// profiles cannot be posted to by an app; a Page is the real target.
+  pageId    String?
+  pageName  String?
+
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@unique([platform, accountId, tenantId])
   @@map("social_accounts")
@@ -281,10 +458,14 @@ enum Platform {
 }
 
 enum EventStatus {
-  SCHEDULED
-  PUBLISHED
-  CANCELLED
   DRAFT
+  SCHEDULED
+  /// Claimed by the scheduler. Kept distinct so a crash mid-publish cannot be
+  /// silently retried into a duplicate post.
+  PUBLISHING
+  PUBLISHED
+  FAILED
+  CANCELLED
 }
 
 // ============================================
@@ -292,36 +473,36 @@ enum EventStatus {
 // ============================================
 
 model Subscription {
-  id          String             @id @default(uuid())
+  id                   String             @id @default(uuid())
   stripeSubscriptionId String?
-  status      SubscriptionStatus @default(ACTIVE)
-  currentPeriodStart DateTime
-  currentPeriodEnd   DateTime
-  cancelAtPeriodEnd  Boolean     @default(false)
-  createdAt   DateTime           @default(now())
-  updatedAt   DateTime           @updatedAt
+  status               SubscriptionStatus @default(ACTIVE)
+  currentPeriodStart   DateTime
+  currentPeriodEnd     DateTime
+  cancelAtPeriodEnd    Boolean            @default(false)
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
 
-  tenantId    String             @unique
-  tenant      Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  planId      String
-  plan        PlanItem           @relation(fields: [planId], references: [id])
-  invoices    Invoice[]
+  tenantId String    @unique
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  planId   String
+  plan     PlanItem  @relation(fields: [planId], references: [id])
+  invoices Invoice[]
 
   @@map("subscriptions")
 }
 
 model PlanItem {
-  id          String   @id @default(uuid())
-  name        String   @unique
-  description String?
-  price       Decimal  @db.Decimal(10, 2)
-  currency    String   @default("EUR")
-  interval    String   @default("month") // month, year
+  id            String   @id @default(uuid())
+  name          String   @unique
+  description   String?
+  price         Decimal  @db.Decimal(10, 2)
+  currency      String   @default("EUR")
+  interval      String   @default("month") // month, year
   stripePriceId String?
-  features    Json?
-  isActive    Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  features      Json?
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
   subscriptions Subscription[]
 
@@ -329,15 +510,15 @@ model PlanItem {
 }
 
 model Invoice {
-  id          String        @id @default(uuid())
+  id              String        @id @default(uuid())
   stripeInvoiceId String?
-  amount      Decimal       @db.Decimal(10, 2)
-  currency    String        @default("EUR")
-  status      InvoiceStatus @default(PENDING)
-  paidAt      DateTime?
-  invoiceUrl  String?
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
+  amount          Decimal       @db.Decimal(10, 2)
+  currency        String        @default("EUR")
+  status          InvoiceStatus @default(PENDING)
+  paidAt          DateTime?
+  invoiceUrl      String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
 
   subscriptionId String
   subscription   Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
@@ -346,19 +527,19 @@ model Invoice {
 }
 
 model PaymentMethod {
-  id          String   @id @default(uuid())
-  stripePaymentMethodId String @unique
-  type        String   @default("card")
-  brand       String?
-  last4       String?
-  expMonth    Int?
-  expYear     Int?
-  isDefault   Boolean  @default(false)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id                    String   @id @default(uuid())
+  stripePaymentMethodId String   @unique
+  type                  String   @default("card")
+  brand                 String?
+  last4                 String?
+  expMonth              Int?
+  expYear               Int?
+  isDefault             Boolean  @default(false)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
 
-  tenantId    String
-  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@map("payment_methods")
 }
@@ -389,38 +570,43 @@ enum WebsiteStatus {
 // ============================================
 
 model Website {
-  id              String        @id @default(uuid())
-  businessName    String
-  businessType    String
-  description     String
-  services        String[]
-  contactPhone    String?
-  contactEmail    String?
-  contactAddress  String?
-  primaryColor    String        @default("#3b82f6")
-  secondaryColor  String        @default("#1e3a8a")
-  accentColor     String        @default("#22c55e")
-  fontFamily      String        @default("Inter")
-  template        String        @default("modern")
-  logoUrl         String?
-  logoText        String?
-  content         Json?
-  html            String
-  css             String
-  subdomain       String        @unique
-  status          WebsiteStatus @default(DRAFT)
-  deploymentStatus String?
-  publishedAt     DateTime?
-  vercelProjectId String?
+  id                 String        @id @default(uuid())
+  businessName       String
+  businessType       String
+  description        String
+  services           String[]
+  contactPhone       String?
+  contactEmail       String?
+  contactAddress     String?
+  primaryColor       String        @default("#3b82f6")
+  secondaryColor     String        @default("#1e3a8a")
+  accentColor        String        @default("#22c55e")
+  fontFamily         String        @default("Inter")
+  template           String        @default("modern")
+  logoUrl            String?
+  logoText           String?
+  content            Json?
+  html               String
+  css                String
+  subdomain          String        @unique
+  status             WebsiteStatus @default(DRAFT)
+  deploymentStatus   String?
+  publishedAt        DateTime?
+  vercelProjectId    String?
   vercelDeploymentId String?
-  vercelUrl       String?
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
+  vercelUrl          String?
+  // Photography runs after the response: a site needs a hero plus several
+  // section and product shots at ~50s each, which no HTTP request survives.
+  // PENDING | RENDERING | READY | PARTIAL | FAILED
+  visualStatus       String        @default("PENDING")
 
-  tenantId        String
-  tenant          Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  userId          String
-  user            User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userId   String
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("websites")
 }
@@ -430,32 +616,41 @@ model Website {
 // ============================================
 
 model Menu {
-  id              String   @id @default(uuid())
-  name            String
-  businessName    String
-  businessType    String
-  description     String   @default("")
-  categories      Json
-  template        String   @default("MODERN")
-  primaryColor    String   @default("#3b82f6")
-  secondaryColor  String   @default("#1e3a8a")
-  accentColor     String   @default("#22c55e")
-  fontFamily      String   @default("Inter")
-  fontSizes       Json?
-  html            String
-  css             String
-  slug            String
-  status          String   @default("DRAFT")
-  publishedAt     DateTime?
-  vercelUrl       String?
-  qrCodeUrl       String?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id             String    @id @default(uuid())
+  name           String
+  businessName   String
+  businessType   String
+  description    String    @default("")
+  categories     Json
+  template       String    @default("MODERN")
+  primaryColor   String    @default("#3b82f6")
+  secondaryColor String    @default("#1e3a8a")
+  accentColor    String    @default("#22c55e")
+  fontFamily     String    @default("Inter")
+  fontSizes      Json?
+  html           String
+  css            String
+  slug           String
+  status         String    @default("DRAFT")
+  publishedAt    DateTime?
+  vercelUrl      String?
+  qrCodeUrl      String?
 
-  tenantId        String
-  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  userId          String
-  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // Visuals are rendered after the text, in the background: a dish photo takes
+  // ~50s and a menu needs several, which no HTTP request should wait for.
+  // PENDING | RENDERING | READY | PARTIAL | FAILED
+  visualStatus String  @default("PENDING")
+  heroImageUrl String?
+  logoUrl      String?
+  layout       String  @default("EDITORIAL")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userId   String
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("menus")
 }
@@ -465,34 +660,34 @@ model Menu {
 // ============================================
 
 model Poster {
-  id              String   @id @default(uuid())
-  name            String
-  businessName    String
-  businessType    String
-  title           String
-  description     String?
-  sections        Json?
-  template        String   @default("MODERN")
-  size            String   @default("SQUARE")
-  primaryColor    String   @default("#1a1a2e")
-  secondaryColor  String   @default("#16213e")
-  accentColor     String   @default("#e94560")
-  fontFamily      String   @default("Inter")
-  fontSizes       Json?
-  content         String?
-  imageUrl        String?
-  slug            String
-  status          String   @default("DRAFT")
-  publishedAt     DateTime?
-  vercelUrl       String?
-  qrCodeUrl       String?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id             String    @id @default(uuid())
+  name           String
+  businessName   String
+  businessType   String
+  title          String
+  description    String?
+  sections       Json?
+  template       String    @default("MODERN")
+  size           String    @default("SQUARE")
+  primaryColor   String    @default("#1a1a2e")
+  secondaryColor String    @default("#16213e")
+  accentColor    String    @default("#e94560")
+  fontFamily     String    @default("Inter")
+  fontSizes      Json?
+  content        String?
+  imageUrl       String?
+  slug           String
+  status         String    @default("DRAFT")
+  publishedAt    DateTime?
+  vercelUrl      String?
+  qrCodeUrl      String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
-  tenantId        String
-  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  userId          String
-  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userId   String
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("posters")
 }
@@ -502,23 +697,85 @@ model Poster {
 // ============================================
 
 model QrCode {
-  id              String   @id @default(uuid())
-  name            String
-  type            String   @default("url")
-  data            String
-  url             String
-  size            Int      @default(300)
-  color           String   @default("#000000")
-  bgColor         String   @default("#ffffff")
-  logo            String?
-  format          String   @default("png")
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id        String   @id @default(uuid())
+  name      String
+  type      String   @default("url")
+  data      String
+  url       String
+  size      Int      @default(300)
+  color     String   @default("#000000")
+  bgColor   String   @default("#ffffff")
+  logo      String?
+  format    String   @default("png")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  tenantId        String
-  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  userId          String
-  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userId   String
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("qr_codes")
+}
+
+// ============================================
+// Reels - short-form vertical video
+// ============================================
+
+// A generated reel.
+//
+// Previously this existed only as a JSON shot list returned from an endpoint
+// and thrown away: no row, no images, no video, nothing to come back to. A
+// reel is now a real artefact - a script, a rendered frame per scene, and an
+// encoded 9:16 MP4 - that lives long enough to be reviewed, re-rendered and
+// downloaded.
+model Reel {
+  id           String @id @default(uuid())
+  title        String
+  slug         String
+  businessName String
+  businessType String @default("OTHER")
+  description  String @default("")
+
+  platform    String @default("INSTAGRAM")
+  theme       String @default("BUSINESS")
+  tone        String @default("PROFESSIONAL")
+  style       String @default("MODERN")
+  musicMood   String @default("UPBEAT")
+  durationSec Int    @default(30)
+
+  /// The scene list: timing, copy, shot direction and the rendered frame.
+  scenes   Json
+  /// Hashtags, caption and CTA for the post that carries the video.
+  caption  String   @default("")
+  hashtags String[] @default([])
+  ctaText  String   @default("")
+
+  /// Brand identity frozen at generation time, so a later brand change does
+  /// not silently invalidate what was already produced.
+  primaryColor   String  @default("#111111")
+  secondaryColor String  @default("#444444")
+  accentColor    String  @default("#C27A2C")
+  fontFamily     String  @default("Inter")
+  logoUrl        String?
+
+  /// PENDING | SCRIPTING | RENDERING | ENCODING | READY | PARTIAL | FAILED
+  status    String  @default("PENDING")
+  /// Why it failed, shown to the user instead of a generic message.
+  error     String?
+  /// Stored paths produced by the pipeline.
+  posterUrl String?
+  videoUrl  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userId   String
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([slug, tenantId])
+  @@index([tenantId, createdAt])
+  @@map("reels")
 }

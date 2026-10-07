@@ -2,7 +2,6 @@ import {
   Controller, Get, Post, Put, Delete, Body, Param, Query, UseGuards,
   HttpCode, HttpStatus, Res
 } from '@nestjs/common';
-import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { TenantGuard } from '../../common/guards/tenant.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Public } from '../../common/decorators/public.decorator';
@@ -10,11 +9,13 @@ import { PosterService } from './poster.service';
 import { PosterGenerationDto, PosterUpdateDto } from './poster.dto';
 import type { Response } from 'express';
 
+import { AiQuota } from '../../common/quota/ai-quota.decorator';
 @Controller('posters')
-@UseGuards(JwtAuthGuard, TenantGuard)
+@UseGuards(TenantGuard)
 export class PosterController {
   constructor(private readonly posterService: PosterService) {}
 
+  @AiQuota('poster.generate', 8)
   @Post('generate')
   @HttpCode(HttpStatus.CREATED)
   async generatePoster(
@@ -73,8 +74,9 @@ export class PosterController {
   async generateQrCode(
     @Param('id') id: string,
     @CurrentUser('tenantId') tenantId: string,
+    @CurrentUser('sub') userId: string,
   ) {
-    return this.posterService.generatePosterQrCode(id, tenantId);
+    return this.posterService.generatePosterQrCode(id, tenantId, userId);
   }
 
   @Post(':id/publish')

@@ -7,23 +7,27 @@ import {
   Body,
   Param,
   UseGuards,
-  Request,
 } from '@nestjs/common';
+import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { PaymentService } from './payment.service';
-import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { TenantGuard } from '../../common/guards/tenant.guard';
-import {
-  CreatePlanDto,
-  UpdatePlanDto,
-  CreateSubscriptionDto,
-  UpdateSubscriptionDto,
-  CreateInvoiceDto,
-  CreatePaymentMethodDto,
-  CheckoutSessionDto,
-} from './payment.dto';
+import { SuperAdminGuard } from '../../common/guards/super-admin.guard';
+import { CurrentTenant } from '../../common/decorators/tenant.decorator';
+import { CreatePlanDto, UpdatePlanDto } from './payment.dto';
 
+/**
+ * Read-only view of a tenant's billing, plus the plan catalogue.
+ *
+ * Every state change to a subscription goes through /billing (Stripe checkout,
+ * signed webhook, customer portal). The routes that used to live here —
+ * creating an ACTIVE subscription, editing or cancelling one by id, issuing
+ * invoices, a mock checkout — bypassed payment entirely and were not scoped to
+ * the caller's tenant, so they were removed rather than patched.
+ */
+@ApiTags('Payment')
+@ApiBearerAuth()
 @Controller('payment')
-@UseGuards(JwtAuthGuard, TenantGuard)
+@UseGuards(TenantGuard)
 export class PaymentController {
   constructor(private readonly paymentService: PaymentService) {}
 
@@ -39,86 +43,44 @@ export class PaymentController {
     return this.paymentService.findPlanById(id);
   }
 
+  // The catalogue is platform-wide: only the platform operator edits it.
   @Post('plans')
+  @UseGuards(SuperAdminGuard)
   async createPlan(@Body() dto: CreatePlanDto) {
     return this.paymentService.createPlan(dto);
   }
 
   @Put('plans/:id')
+  @UseGuards(SuperAdminGuard)
   async updatePlan(@Param('id') id: string, @Body() dto: UpdatePlanDto) {
     return this.paymentService.updatePlan(id, dto);
   }
 
   @Delete('plans/:id')
+  @UseGuards(SuperAdminGuard)
   async deletePlan(@Param('id') id: string) {
     return this.paymentService.deletePlan(id);
   }
 
-  // ==================== SUBSCRIPTIONS ====================
+  // ==================== TENANT (read-only) ====================
 
   @Get('subscription')
-  async findSubscription(@Request() req) {
-    return this.paymentService.findSubscriptionByTenant(req.tenantId);
+  async findSubscription(@CurrentTenant('id') tenantId: string) {
+    return this.paymentService.findSubscriptionByTenant(tenantId);
   }
-
-  @Post('subscription')
-  async createSubscription(@Request() req, @Body() dto: CreateSubscriptionDto) {
-    return this.paymentService.createSubscription(req.tenantId, dto);
-  }
-
-  @Put('subscription/:id')
-  async updateSubscription(@Param('id') id: string, @Body() dto: UpdateSubscriptionDto) {
-    return this.paymentService.updateSubscription(id, dto);
-  }
-
-  @Delete('subscription/:id')
-  async cancelSubscription(@Param('id') id: string) {
-    return this.paymentService.cancelSubscription(id);
-  }
-
-  // ==================== INVOICES ====================
 
   @Get('invoices')
-  async findInvoices(@Request() req) {
-    return this.paymentService.findInvoicesByTenant(req.tenantId);
+  async findInvoices(@CurrentTenant('id') tenantId: string) {
+    return this.paymentService.findInvoicesByTenant(tenantId);
   }
-
-  @Post('invoices')
-  async createInvoice(@Body() dto: CreateInvoiceDto) {
-    return this.paymentService.createInvoice(dto);
-  }
-
-  // ==================== PAYMENT METHODS ====================
 
   @Get('payment-methods')
-  async findPaymentMethods(@Request() req) {
-    return this.paymentService.findPaymentMethodsByTenant(req.tenantId);
-  }
-
-  @Post('payment-methods')
-  async createPaymentMethod(@Request() req, @Body() dto: CreatePaymentMethodDto) {
-    return this.paymentService.createPaymentMethod(req.tenantId, dto);
-  }
-
-  @Put('payment-methods/:id/default')
-  async setDefaultPaymentMethod(@Request() req, @Param('id') id: string) {
-    return this.paymentService.setDefaultPaymentMethod(req.tenantId, id);
-  }
-
-  @Delete('payment-methods/:id')
-  async deletePaymentMethod(@Request() req, @Param('id') id: string) {
-    return this.paymentService.deletePaymentMethod(req.tenantId, id);
-  }
-
-  // ==================== CHECKOUT ====================
-
-  @Post('checkout')
-  async createCheckoutSession(@Request() req, @Body() dto: CheckoutSessionDto) {
-    return this.paymentService.createCheckoutSession(req.tenantId, dto);
+  async findPaymentMethods(@CurrentTenant('id') tenantId: string) {
+    return this.paymentService.findPaymentMethodsByTenant(tenantId);
   }
 
   @Get('status')
-  async getPaymentStatus(@Request() req) {
-    return this.paymentService.getPaymentStatus(req.tenantId);
+  async getPaymentStatus(@CurrentTenant('id') tenantId: string) {
+    return this.paymentService.getPaymentStatus(tenantId);
   }
 }

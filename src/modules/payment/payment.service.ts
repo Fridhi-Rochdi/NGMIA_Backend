@@ -1,14 +1,6 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
-import {
-  CreatePlanDto,
-  UpdatePlanDto,
-  CreateSubscriptionDto,
-  UpdateSubscriptionDto,
-  CreateInvoiceDto,
-  CreatePaymentMethodDto,
-  CheckoutSessionDto,
-} from './payment.dto';
+import { CreatePlanDto, UpdatePlanDto } from './payment.dto';
 
 @Injectable()
 export class PaymentService {
@@ -77,53 +69,6 @@ export class PaymentService {
     });
   }
 
-  async createSubscription(tenantId: string, dto: CreateSubscriptionDto) {
-    const plan = await this.findPlanById(dto.planId);
-    const now = new Date();
-    const periodEnd = new Date();
-    periodEnd.setMonth(periodEnd.getMonth() + (plan.interval === 'year' ? 12 : 1));
-
-    return this.prisma.subscription.create({
-      data: {
-        tenantId,
-        planId: dto.planId,
-        stripeSubscriptionId: dto.stripeSubscriptionId,
-        currentPeriodStart: now,
-        currentPeriodEnd: periodEnd,
-        status: 'ACTIVE',
-      },
-      include: { plan: true },
-    });
-  }
-
-  async updateSubscription(id: string, dto: UpdateSubscriptionDto) {
-    const subscription = await this.prisma.subscription.findUnique({ where: { id } });
-    if (!subscription) throw new NotFoundException('Subscription not found');
-
-    return this.prisma.subscription.update({
-      where: { id },
-      data: {
-        status: dto.status,
-        cancelAtPeriodEnd: dto.cancelAtPeriodEnd,
-      },
-      include: { plan: true },
-    });
-  }
-
-  async cancelSubscription(id: string) {
-    const subscription = await this.prisma.subscription.findUnique({ where: { id } });
-    if (!subscription) throw new NotFoundException('Subscription not found');
-
-    return this.prisma.subscription.update({
-      where: { id },
-      data: {
-        status: 'CANCELLED',
-        cancelAtPeriodEnd: true,
-      },
-      include: { plan: true },
-    });
-  }
-
   // ==================== INVOICES ====================
 
   async findInvoicesByTenant(tenantId: string) {
@@ -132,23 +77,6 @@ export class PaymentService {
         subscription: { tenantId },
       },
       orderBy: { createdAt: 'desc' },
-      include: { subscription: { include: { plan: true } } },
-    });
-  }
-
-  async createInvoice(dto: CreateInvoiceDto) {
-    const subscription = await this.prisma.subscription.findUnique({
-      where: { id: dto.subscriptionId },
-    });
-    if (!subscription) throw new NotFoundException('Subscription not found');
-
-    return this.prisma.invoice.create({
-      data: {
-        subscriptionId: dto.subscriptionId,
-        amount: dto.amount,
-        currency: dto.currency || 'EUR',
-        status: 'PENDING',
-      },
       include: { subscription: { include: { plan: true } } },
     });
   }
@@ -162,72 +90,7 @@ export class PaymentService {
     });
   }
 
-  async createPaymentMethod(tenantId: string, dto: CreatePaymentMethodDto) {
-    if (dto.isDefault) {
-      await this.prisma.paymentMethod.updateMany({
-        where: { tenantId },
-        data: { isDefault: false },
-      });
-    }
-
-    return this.prisma.paymentMethod.create({
-      data: {
-        tenantId,
-        stripePaymentMethodId: dto.stripePaymentMethodId,
-        type: dto.type || 'card',
-        brand: dto.brand,
-        last4: dto.last4,
-        expMonth: dto.expMonth,
-        expYear: dto.expYear,
-        isDefault: dto.isDefault || false,
-      },
-    });
-  }
-
-  async setDefaultPaymentMethod(tenantId: string, id: string) {
-    const method = await this.prisma.paymentMethod.findFirst({
-      where: { id, tenantId },
-    });
-    if (!method) throw new NotFoundException('Payment method not found');
-
-    await this.prisma.paymentMethod.updateMany({
-      where: { tenantId },
-      data: { isDefault: false },
-    });
-
-    return this.prisma.paymentMethod.update({
-      where: { id },
-      data: { isDefault: true },
-    });
-  }
-
-  async deletePaymentMethod(tenantId: string, id: string) {
-    const method = await this.prisma.paymentMethod.findFirst({
-      where: { id, tenantId },
-    });
-    if (!method) throw new NotFoundException('Payment method not found');
-
-    return this.prisma.paymentMethod.delete({ where: { id } });
-  }
-
-  // ==================== CHECKOUT ====================
-
-  async createCheckoutSession(tenantId: string, dto: CheckoutSessionDto) {
-    const plan = await this.findPlanById(dto.planId);
-
-    // In a real implementation, you would integrate with Stripe here
-    // For now, we return a mock session
-    return {
-      sessionId: `cs_${Date.now()}`,
-      url: dto.successUrl || '/payment/success',
-      plan: {
-        id: plan.id,
-        name: plan.name,
-        price: plan.price,
-        currency: plan.currency,
-      },
-    };
-  }
+  // ==================== STATUS ====================
 
   async getPaymentStatus(tenantId: string) {
     const subscription = await this.findSubscriptionByTenant(tenantId);

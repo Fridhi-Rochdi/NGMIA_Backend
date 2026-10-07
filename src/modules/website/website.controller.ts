@@ -1,8 +1,9 @@
-import { Controller, Post, Get, Param, Body, UseGuards, Request } from '@nestjs/common';
-import { WebsiteService, WebsiteGenerationDto } from './website.service';
-import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { Controller, Post, Get, Param, Body, Request } from '@nestjs/common';
+import { WebsiteService } from './website.service';
+import { GenerateWebsiteDto } from './website.dto';
 import { Public } from '../../common/decorators/public.decorator';
 
+import { AiQuota } from '../../common/quota/ai-quota.decorator';
 interface AuthenticatedRequest {
   user: {
     sub: string;
@@ -28,32 +29,37 @@ export class WebsiteController {
     return this.websiteService.getWebsiteBySubdomain(subdomain);
   }
 
-  @UseGuards(JwtAuthGuard)
+  @AiQuota('website.generate', 15)
   @Post('generate')
-  async generateWebsite(@Body() dto: WebsiteGenerationDto, @Request() req: AuthenticatedRequest) {
+  // A class, not an interface: the ValidationPipe can only validate what has
+  // runtime metadata, so the interface let every field through unchecked.
+  async generateWebsite(@Body() dto: GenerateWebsiteDto, @Request() req: AuthenticatedRequest) {
     return this.websiteService.generateWebsite(dto, req.user.tenantId, req.user.sub);
   }
 
-  @UseGuards(JwtAuthGuard)
   @Get()
   async listWebsites(@Request() req: AuthenticatedRequest) {
     const tenantId = req.user?.tenantId;
     return this.websiteService.listWebsites(tenantId);
   }
 
-  @UseGuards(JwtAuthGuard)
   @Get(':id')
   async getWebsite(@Param('id') id: string, @Request() req: AuthenticatedRequest) {
     return this.websiteService.getWebsite(id, req.user.tenantId);
   }
 
-  @UseGuards(JwtAuthGuard)
+  /** Re-run (or finish) the site's photography without regenerating its copy. */
+  @AiQuota('website.visuals', 10)
+  @Post(':id/refresh-visuals')
+  async refreshVisuals(@Param('id') id: string, @Request() req: AuthenticatedRequest) {
+    return this.websiteService.refreshWebsiteVisuals(id, req.user.tenantId);
+  }
+
   @Post(':id/publish')
   async publishWebsite(@Param('id') id: string, @Request() req: AuthenticatedRequest) {
     return this.websiteService.publishWebsite(id, req.user.tenantId);
   }
 
-  @UseGuards(JwtAuthGuard)
   @Get(':id/deployment-status')
   async getDeploymentStatus(@Param('id') id: string, @Request() req: AuthenticatedRequest) {
     return this.websiteService.getDeploymentStatus(id, req.user.tenantId);

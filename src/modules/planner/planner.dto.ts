@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsString, IsOptional, IsEnum, IsDateString, IsArray } from 'class-validator';
+import { IsString, IsOptional, IsEnum, IsDateString, IsArray, IsBoolean } from 'class-validator';
 
 export class GenerateCalendarDto {
   @ApiProperty()
@@ -32,6 +32,11 @@ export class GenerateCalendarDto {
   @IsOptional()
   @IsEnum(['professional', 'casual', 'friendly', 'authoritative', 'playful'])
   tone?: string;
+
+  @ApiProperty({ required: false, description: "Owner's IANA time zone, e.g. Africa/Casablanca." })
+  @IsOptional()
+  @IsString()
+  timezone?: string;
 }
 
 export class CreateCalendarDto {
@@ -77,6 +82,15 @@ export class CreateCalendarEventDto {
   @IsOptional()
   @IsEnum(['SCHEDULED', 'PUBLISHED', 'CANCELLED', 'DRAFT'])
   status?: string;
+  @ApiProperty({
+    required: false,
+    description:
+      "Autoriser le planificateur a publier cet evenement tout seul. Faux par defaut: un calendrier est une proposition tant que son proprietaire n'a pas tranche.",
+  })
+  @IsOptional()
+  @IsBoolean()
+  autoPublish?: boolean;
+
 }
 
 export class UpdateCalendarEventDto {
@@ -104,4 +118,13 @@ export class UpdateCalendarEventDto {
   @IsOptional()
   @IsEnum(['SCHEDULED', 'PUBLISHED', 'CANCELLED', 'DRAFT'])
   status?: string;
+  @ApiProperty({
+    required: false,
+    description:
+      "Autoriser le planificateur a publier cet evenement tout seul. Faux par defaut: un calendrier est une proposition tant que son proprietaire n'a pas tranche.",
+  })
+  @IsOptional()
+  @IsBoolean()
+  autoPublish?: boolean;
+
 }

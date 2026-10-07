@@ -1,0 +1,5 @@
+-- AlterTable
+ALTER TABLE "menus" ADD COLUMN     "heroImageUrl" TEXT,
+ADD COLUMN     "layout" TEXT NOT NULL DEFAULT 'EDITORIAL',
+ADD COLUMN     "logoUrl" TEXT,
+ADD COLUMN     "visualStatus" TEXT NOT NULL DEFAULT 'PENDING';

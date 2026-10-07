@@ -52,12 +52,14 @@ export class ImageColorsDto {
 
 export class GenerateImageDto {
   @ApiProperty({ description: 'Business name for context' })
+  @IsOptional()
   @IsString()
-  businessName: string;
+  businessName?: string;
 
   @ApiProperty({ enum: ImageBusinessType })
+  @IsOptional()
   @IsEnum(ImageBusinessType)
-  businessType: ImageBusinessType;
+  businessType?: ImageBusinessType;
 
   @ApiProperty({ required: false })
   @IsOptional()

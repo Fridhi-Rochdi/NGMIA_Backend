@@ -1,10 +1,11 @@
-import { Module, forwardRef } from '@nestjs/common';
+import { Module } from '@nestjs/common';
 import { AiEngineService } from './ai-engine.service';
 import { AiEngineController } from './ai-engine.controller';
-import { MenuModule } from '../menu/menu.module';
 
+// Menus are generated through POST /menus only: the duplicate
+// POST /ai-engine/generate-menu (T-22) is gone, and with it the circular
+// dependency on MenuModule.
 @Module({
-  imports: [forwardRef(() => MenuModule)],
   controllers: [AiEngineController],
   providers: [AiEngineService],
   exports: [AiEngineService],

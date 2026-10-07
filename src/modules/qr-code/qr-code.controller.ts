@@ -1,6 +1,5 @@
-import { Controller, Post, Body, Get, Query, Res, HttpStatus, UseGuards } from '@nestjs/common';
+import { Controller, Post, Body, Get, Query, Res, UseGuards } from '@nestjs/common';
 import { Response } from 'express';
-import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { TenantGuard } from '../../common/guards/tenant.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { QrCodeService } from './qr-code.service';
@@ -13,7 +12,7 @@ import {
 } from './qr-code.dto';
 
 @Controller('qr-code')
-@UseGuards(JwtAuthGuard, TenantGuard)
+@UseGuards(TenantGuard)
 export class QrCodeController {
   constructor(private readonly qrCodeService: QrCodeService) {}
 
@@ -23,34 +22,81 @@ export class QrCodeController {
   }
 
   @Post('generate')
-  async generateQrCode(@Body() dto: GenerateQrCodeDto) {
-    return this.qrCodeService.generateQrCode(dto);
+  async generateQrCode(
+    @Body() dto: GenerateQrCodeDto,
+    @CurrentUser('tenantId') tenantId: string,
+    @CurrentUser('sub') userId: string,
+  ) {
+    return this.qrCodeService.generateAndStore(
+      { name: dto.content.slice(0, 80), type: 'custom' },
+      dto,
+      tenantId,
+      userId,
+    );
   }
 
   @Post('menu')
-  async generateMenuQrCode(@Body() dto: GenerateMenuQrCodeDto) {
-    return this.qrCodeService.generateMenuQrCode(dto.restaurantName, dto.menuUrl, {
-      size: dto.size,
-      color: dto.color,
-    });
+  async generateMenuQrCode(
+    @Body() dto: GenerateMenuQrCodeDto,
+    @CurrentUser('tenantId') tenantId: string,
+    @CurrentUser('sub') userId: string,
+  ) {
+    return this.qrCodeService.generateAndStore(
+      { name: dto.restaurantName, type: 'menu' },
+      {
+        content: this.qrCodeService.buildMenuContent(dto.restaurantName, dto.menuUrl),
+        size: dto.size,
+        color: dto.color,
+      },
+      tenantId,
+      userId,
+    );
   }
 
   @Post('poster')
-  async generatePosterQrCode(@Body() dto: GeneratePosterQrCodeDto) {
-    return this.qrCodeService.generatePosterQrCode(dto.campaignName, dto.posterUrl, {
-      size: dto.size,
-      color: dto.color,
-    });
+  async generatePosterQrCode(
+    @Body() dto: GeneratePosterQrCodeDto,
+    @CurrentUser('tenantId') tenantId: string,
+    @CurrentUser('sub') userId: string,
+  ) {
+    return this.qrCodeService.generateAndStore(
+      { name: dto.campaignName, type: 'poster' },
+      {
+        content: this.qrCodeService.buildPosterContent(dto.campaignName, dto.posterUrl),
+        size: dto.size,
+        color: dto.color,
+      },
+      tenantId,
+      userId,
+    );
   }
 
   @Post('vcard')
-  async generateVCardQrCode(@Body() dto: GenerateVCardQrCodeDto) {
-    return this.qrCodeService.generateVCardQrCode(dto, { size: dto.size });
+  async generateVCardQrCode(
+    @Body() dto: GenerateVCardQrCodeDto,
+    @CurrentUser('tenantId') tenantId: string,
+    @CurrentUser('sub') userId: string,
+  ) {
+    return this.qrCodeService.generateAndStore(
+      { name: dto.name, type: 'vcard' },
+      { content: this.qrCodeService.buildVCardContent(dto), size: dto.size },
+      tenantId,
+      userId,
+    );
   }
 
   @Post('wifi')
-  async generateWifiQrCode(@Body() dto: GenerateWifiQrCodeDto) {
-    return this.qrCodeService.generateWifiQrCode(dto, { size: dto.size });
+  async generateWifiQrCode(
+    @Body() dto: GenerateWifiQrCodeDto,
+    @CurrentUser('tenantId') tenantId: string,
+    @CurrentUser('sub') userId: string,
+  ) {
+    return this.qrCodeService.generateAndStore(
+      { name: dto.ssid, type: 'wifi' },
+      { content: this.qrCodeService.buildWifiContent(dto), size: dto.size },
+      tenantId,
+      userId,
+    );
   }
 
   @Get('download')

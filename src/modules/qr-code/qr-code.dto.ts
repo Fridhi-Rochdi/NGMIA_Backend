@@ -75,6 +75,10 @@ export class GenerateVCardQrCodeDto {
 
   @IsOptional()
   @IsString()
+  jobTitle?: string;
+
+  @IsOptional()
+  @IsString()
   phone?: string;
 
   @IsOptional()

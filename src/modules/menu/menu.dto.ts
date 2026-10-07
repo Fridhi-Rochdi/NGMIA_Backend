@@ -1,4 +1,4 @@
-import { IsString, IsOptional, IsArray, ValidateNested, IsEnum } from 'class-validator';
+import { IsString, IsOptional, IsArray, ValidateNested, IsNumber } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export enum MenuBusinessType {
@@ -70,12 +70,27 @@ export class MenuColorsDto {
   accent?: string;
 }
 
-export class MenuGenerationDto {
-  @IsString()
-  businessName: string;
+export class MenuFontSizesDto {
+  @IsOptional() @IsNumber() title?: number;
+  @IsOptional() @IsNumber() category?: number;
+  @IsOptional() @IsNumber() item?: number;
+  @IsOptional() @IsNumber() description?: number;
+  @IsOptional() @IsNumber() price?: number;
+}
 
+export class MenuGenerationDto {
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => MenuFontSizesDto)
+  fontSizes?: MenuFontSizesDto;
+
+  @IsOptional()
   @IsString()
-  businessType: string;
+  businessName?: string;
+
+  @IsOptional()
+  @IsString()
+  businessType?: string;
 
   @IsString()
   @IsOptional()

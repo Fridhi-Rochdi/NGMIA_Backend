@@ -1,4 +1,4 @@
-import { IsString, IsOptional, IsEnum, IsArray, IsObject, ValidateNested } from 'class-validator';
+import { IsString, IsOptional, IsArray, IsObject, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export enum PosterBusinessType {
@@ -81,11 +81,13 @@ export class PosterGenerationDto {
   @IsOptional()
   name?: string;
 
+  @IsOptional()
   @IsString()
-  businessName: string;
+  businessName?: string;
 
+  @IsOptional()
   @IsString()
-  businessType: string;
+  businessType?: string;
 
   @IsString()
   title: string;

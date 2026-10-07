@@ -8,11 +8,16 @@ import {
 import { AiEngineService } from '../ai-engine/ai-engine.service';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { StorageService } from '../../common/storage/storage.service';
+import { BusinessContextService } from '../business-context/business-context.service';
 import { VercelDeploymentService } from './vercel-deployment.service';
 import { WebsiteRendererService } from './website-renderer.service';
 import { buildContent, BuildInput, normalizeSection } from './website-content.builder';
 import { getPath, setPath } from './content-path.util';
 import { WebsiteContent, Section } from './website-content.types';
+import { SiteBlueprint, planSite } from './website-blueprint';
+import { BrandAssetService, ShotSpec } from '../../common/brand-kit/brand-asset.service';
+import { BrandKitService } from '../../common/brand-kit/brand-kit.service';
+import { buildArtDirection } from '../../common/brand-kit/art-direction';
 
 export interface ProductDto {
   name: string;
@@ -23,13 +28,16 @@ export interface ProductDto {
 }
 
 export interface WebsiteGenerationDto {
-  businessName: string;
-  businessType: string;
-  description: string;
+  // Optional: resolved from the tenant's business context when omitted.
+  businessName?: string;
+  businessType?: string;
+  description?: string;
   services?: string[];
   products?: ProductDto[];
   gallery?: { enabled?: boolean; images?: { imageUrl?: string; imagePrompt?: string }[] };
   context?: string;
+  /** Real reviews from the owner; the only ones the site may show. */
+  testimonials?: { quote: string; author?: string; role?: string }[];
   contactInfo?: {
     phone?: string;
     email?: string;
@@ -58,20 +66,37 @@ export class WebsiteService {
     private readonly storage: StorageService,
     private readonly renderer: WebsiteRendererService,
     private readonly vercelDeploymentService: VercelDeploymentService,
+    private readonly businessContext: BusinessContextService,
+    private readonly brandAssets: BrandAssetService,
+    private readonly brandKit: BrandKitService,
   ) {}
 
   // ---------- create ----------
 
-  async generateWebsite(dto: WebsiteGenerationDto, tenantId: string, userId: string) {
+  async generateWebsite(rawDto: WebsiteGenerationDto, tenantId: string, userId: string) {
     if (!tenantId || !userId) {
       throw new BadRequestException('Missing tenant or user context');
     }
 
+    // Anything the form left blank comes from the tenant's business context.
+    const dto = await this.businessContext.resolve(tenantId, rawDto);
+    const context = await this.businessContext.find(tenantId);
+    if (!dto.businessName) {
+      throw new BadRequestException(
+        "Nom du commerce manquant. Renseignez votre contexte business dans les paramètres.",
+      );
+    }
+
     const products = dto.products || [];
-    const language = dto.language || 'fr';
+    const language = dto.language || context?.language || 'fr';
 
     // Resolve the pasted Google Maps URL into an embeddable location.
-    const contact = { ...(dto.contactInfo || {}) };
+    const contact = {
+      phone: context?.contactPhone || undefined,
+      email: context?.contactEmail || undefined,
+      address: context?.contactAddress || undefined,
+      ...(dto.contactInfo || {}),
+    };
     if (contact.googleMapsUrl) {
       const resolved = await this.resolveMapFromUrl(contact.googleMapsUrl);
       if (resolved.mapQuery) contact.mapQuery = resolved.mapQuery;
@@ -92,13 +117,37 @@ export class WebsiteService {
       template: dto.template,
       logoUrl: dto.logoUrl,
       language,
-      currency: dto.currency,
+      currency: dto.currency || context?.currency,
     };
 
-    // Pull tone / target audience from the tenant's brand to enrich the copy.
-    const brand = await this.prisma.brand.findFirst({ where: { tenantId } });
-    input.tone = brand?.tone || 'professional';
-    input.targetAudience = brand?.targetAudience || undefined;
+    // Tone and audience come from the business context, not from an arbitrary
+    // generated brand kit (a tenant accumulates one per branding generation).
+    input.tone = context?.tone || 'professional';
+    input.targetAudience = context?.targetAudience || undefined;
+
+    // Decide the architecture BEFORE writing a word. A restaurant gets a menu
+    // and a gallery; a law firm gets practice areas and a first-meeting
+    // section. Same generator, different object.
+    const blueprint = planSite({
+      businessType: dto.businessType,
+      description: dto.description,
+      hasProducts: products.length > 0,
+      hasGallery: dto.gallery?.enabled !== false,
+      template: dto.template,
+    });
+    this.logger.log(
+      `Blueprint: ${blueprint.category} (${blueprint.label}) — ` +
+        `${blueprint.sections.length} sections [${blueprint.sections.map((x) => x.role).join(', ')}]`,
+    );
+
+    // The blueprint also sets the look, unless the user picked one explicitly.
+    input.template = (dto.template || this.templateFor(blueprint)) as any;
+    // The tenant's own identity wins over the per-trade default, so a site
+    // generated after a branding run is not a different brand from its logo.
+    const kit = await this.brandKit.find(tenantId);
+    input.colors = this.brandKit.apply(dto.colors || {}, kit, blueprint.palette);
+    if (!dto.logoUrl && kit?.logoUrl) input.logoUrl = kit.logoUrl;
+    if (!dto.fontFamily && kit?.fonts.body) input.fontFamily = kit.fonts.body;
 
     let ai: any = undefined;
     try {
@@ -110,24 +159,36 @@ export class WebsiteService {
         targetAudience: input.targetAudience,
         tone: input.tone,
         language: input.language,
+        currency: input.currency,
         context: input.context,
-        // When the user provides products, skip the AI "services" section.
-        sections: products.length
-          ? ['hero', 'about', 'testimonials', 'faq', 'cta', 'contact']
-          : undefined,
+        category: blueprint.label,
+        primaryAction: blueprint.primaryAction,
+        products,
+        testimonials: dto.testimonials,
+        kit,
+        blueprint: blueprint.sections.map((x) => ({
+          type: x.type,
+          role: x.role,
+          brief: x.brief,
+        })),
       });
     } catch (err: any) {
-      this.logger.warn(`AI content generation failed, using fallback: ${err.message}`);
+      this.logger.error(`AI website content generation failed: ${err.message}`);
+      throw new BadRequestException(
+        `La génération IA du site web a échoué. Aucun site par défaut n'a été créé; veuillez réessayer. Détail: ${err.message}`,
+      );
     }
 
     const content = buildContent(input, ai);
+    this.hideEmptySections(content);
     // Fill every empty image slot (hero, about, gallery, products, custom) with AI.
     // Pass rich business context so images match the actual business, not a
     // generic (and often wrong) interpretation of just the category.
-    const bizContext = [dto.businessType, dto.businessName, (dto.description || '').slice(0, 120)]
-      .filter(Boolean)
-      .join(', ');
-    await this.generateContentImages(content, bizContext, `t-${tenantId}`);
+    content.theme.heroStyle = content.theme.heroStyle || blueprint.heroStyle;
+    content.theme.density = content.theme.density || blueprint.density;
+    // Photography is deferred: a site needs a hero plus section and product
+    // shots at ~50s each, and generating them inline pushed the request past
+    // every HTTP client's header timeout.
     const html = this.renderer.render(content);
     const subdomain = this.generateSubdomain(dto.businessName);
 
@@ -153,73 +214,207 @@ export class WebsiteService {
         subdomain,
         status: 'DRAFT',
         deploymentStatus: 'NONE',
+        visualStatus: 'PENDING',
         tenantId,
         userId,
       },
     });
 
-    return this.toResponse(website);
+    void this.renderWebsiteVisuals(website.id, blueprint, dto);
+
+    return { ...this.toResponse(website), visualStatus: 'RENDERING' };
   }
 
   /**
-   * Fill every empty image slot across the content with an AI-generated image,
-   * in small parallel batches (to stay within provider limits). If generation
-   * is disabled/fails, generateImage returns an instant placeholder.
+   * Render the site's photography in the background, then recompile the HTML.
+   *
+   * `visualStatus` is what the client polls; PARTIAL means some slots could
+   * not be produced and the layout was closed up around them rather than left
+   * with holes.
    */
-  private async generateContentImages(content: WebsiteContent, bizContext: string, scope: string) {
-    const tasks: { prompt: string; assign: (url: string) => void }[] = [];
-    const clean = ', realistic high quality professional photography, no animals, no text, no watermark';
+  async renderWebsiteVisuals(
+    id: string,
+    blueprint: SiteBlueprint,
+    dto: WebsiteGenerationDto,
+  ): Promise<void> {
+    const website = await this.prisma.website.findUnique({ where: { id } });
+    if (!website) return;
 
-    for (const s of content.sections) {
-      const d: any = s.data || {};
-      if ((s.type === 'hero' || s.type === 'about' || s.type === 'custom') && !d.imageUrl) {
-        tasks.push({
-          prompt: (d.imagePrompt ? d.imagePrompt : `${bizContext}, interior ambiance`) + clean,
-          assign: (u) => (d.imageUrl = u),
-        });
-      }
-      if (s.type === 'gallery' && Array.isArray(d.images)) {
-        d.images.forEach((img: string, i: number) => {
-          if (!img) {
-            const custom = d.imagePrompts?.[i];
-            tasks.push({
-              prompt: (custom ? custom : `${bizContext}, interior ambiance, atmosphere`) + clean,
-              assign: (u) => (d.images[i] = u),
-            });
-          }
-        });
-      }
-      if (s.type === 'products' && Array.isArray(d.items)) {
-        d.items.forEach((it: any) => {
-          if (!it.imageUrl) {
-            tasks.push({
-              prompt: it.imagePrompt
-                ? `${it.imagePrompt}, ${bizContext}, clean neutral background, realistic professional product photography, no text, no watermark`
-                : `Professional product photograph of "${it.name}"${it.description ? ' (' + it.description + ')' : ''}, ${bizContext}, clean neutral background, soft studio lighting, realistic, sharp focus, no text, no watermark`,
-              assign: (u) => (it.imageUrl = u),
-            });
-          }
-        });
-      }
-    }
-
-    const BATCH = 3;
-    for (let i = 0; i < tasks.length; i += BATCH) {
-      await Promise.all(
-        tasks.slice(i, i + BATCH).map(async (t) => {
-          try {
-            const url = await this.aiEngineService.generateImage({
-              prompt: t.prompt,
-              size: '1024x1024',
-              scope,
-            } as any);
-            t.assign(url);
-          } catch (err: any) {
-            this.logger.warn(`Slot image generation failed: ${err.message}`);
-          }
-        }),
+    await this.prisma.website.update({ where: { id }, data: { visualStatus: 'RENDERING' } });
+    try {
+      const content = this.content(website);
+      const outcome = await this.generateContentImages(
+        content,
+        blueprint,
+        dto,
+        `t-${website.tenantId}`,
       );
+      await this.prisma.website.update({
+        where: { id },
+        data: {
+          content: content as any,
+          html: this.renderer.render(content),
+          visualStatus:
+            outcome.total === 0
+              ? 'READY'
+              : outcome.rendered === 0
+                ? 'FAILED'
+                : outcome.rendered < outcome.total
+                  ? 'PARTIAL'
+                  : 'READY',
+        },
+      });
+    } catch (error: any) {
+      this.logger.error(`Website visual rendering failed: ${error?.message}`);
+      await this.prisma.website
+        .update({ where: { id }, data: { visualStatus: 'FAILED' } })
+        .catch(() => undefined);
     }
+  }
+
+  /** Re-run (or finish) a site's photography without regenerating its copy. */
+  async refreshWebsiteVisuals(id: string, tenantId: string) {
+    const website = await this.owned(id, tenantId);
+    const blueprint = planSite({
+      businessType: website.businessType,
+      description: website.description,
+      hasProducts: (this.content(website).sections || []).some((x) => x.type === 'products'),
+    });
+    void this.renderWebsiteVisuals(id, blueprint, {
+      businessName: website.businessName,
+      businessType: website.businessType,
+      description: website.description,
+    });
+    return { visualStatus: 'RENDERING' };
+  }
+
+  /**
+   * Photograph the site.
+   *
+   * Every shot goes through the brand's single art direction, so the hero, the
+   * team portrait and the six product packs look like one commission rather
+   * than six unrelated stock images. Subjects come from the blueprint when the
+   * copywriter did not supply one.
+   */
+  private async generateContentImages(
+    content: WebsiteContent,
+    blueprint: SiteBlueprint,
+    dto: WebsiteGenerationDto,
+    scope: string,
+  ): Promise<{ rendered: number; total: number }> {
+    const kit = await this.brandKit.find(scope.replace(/^t-/, ''));
+    const direction = buildArtDirection({
+      brandKey: `${scope}:${kit?.name || dto.businessName}`,
+      style: kit?.style || blueprint.visualStyle,
+      colors: [
+        content.theme.primaryColor,
+        content.theme.secondaryColor,
+        content.theme.accentColor,
+      ],
+    });
+
+    const setting = [dto.businessType, (dto.description || '').slice(0, 100)]
+      .filter(Boolean)
+      .join(', ');
+    const place = `a ${blueprint.label.toLowerCase()} business${setting ? ` (${setting})` : ''}`;
+    const briefFor = (role: string) =>
+      blueprint.sections.find((x) => x.role === role)?.shots?.[0];
+
+    const tasks: { spec: ShotSpec; assign: (url: string) => void }[] = [];
+
+    for (const section of content.sections) {
+      const d: any = section.data || {};
+      const planned = briefFor(d.role);
+
+      if (['hero', 'about', 'custom'].includes(section.type) && !d.imageUrl) {
+        // A text-only section in the blueprint carries no shot plan, and
+        // inventing one for it is how sites end up padded with stock imagery.
+        if (section.type === 'hero' || planned) {
+          tasks.push({
+            spec: {
+              kind: planned?.kind || (section.type === 'hero' ? 'hero' : 'interior'),
+              aspect: section.type === 'hero' ? 'wide' : 'landscape',
+              subject: d.imagePrompt || planned?.subject || place,
+              fallbackSubject: planned?.subject,
+            },
+            assign: (u) => (d.imageUrl = u),
+          });
+        }
+      }
+
+      if (section.type === 'gallery') {
+        const wanted = planned?.count || 3;
+        d.images = Array.isArray(d.images) ? d.images : [];
+        for (let i = 0; i < wanted; i += 1) {
+          if (d.images[i]) continue;
+          const index = i;
+          tasks.push({
+            spec: {
+              kind: planned?.kind || 'detail',
+              aspect: 'landscape',
+              subject: d.imagePrompts?.[index] || planned?.subject || place,
+              fallbackSubject: planned?.subject,
+            },
+            assign: (u) => (d.images[index] = u),
+          });
+        }
+      }
+
+      if ((section.type === 'products' || d.role === 'menu-highlights') && Array.isArray(d.items)) {
+        for (const item of d.items) {
+          if (item.imageUrl || !item?.name) continue;
+          tasks.push({
+            spec: {
+              kind: planned?.kind || 'product',
+              aspect: 'landscape',
+              subject:
+                item.imagePrompt ||
+                `${item.name}${item.description ? `, ${item.description}` : ''}, from ${place}`,
+              // The owner's product name can itself trip the provider's filter.
+              fallbackSubject: planned?.subject || 'a single product on a clean surface',
+            },
+            assign: (u) => (item.imageUrl = u),
+          });
+        }
+      }
+    }
+
+    if (!tasks.length) return { rendered: 0, total: 0 };
+    this.logger.log(`Rendu de ${tasks.length} visuel(s) pour ${dto.businessName}`);
+
+    const shots = await this.brandAssets.renderAll(
+      direction,
+      tasks.map((t) => t.spec),
+      scope,
+    );
+    shots.forEach((shot, i) => {
+      if (shot.url) tasks[i].assign(shot.url);
+    });
+
+    // A gallery that only half-filled would render holes.
+    for (const section of content.sections) {
+      if (section.type !== 'gallery') continue;
+      const d: any = section.data || {};
+      d.images = (d.images || []).filter(Boolean);
+      if (!d.images.length) section.visible = false;
+    }
+
+    const rendered = shots.filter((x) => x.url).length;
+    this.logger.log(`Visuels: ${rendered}/${tasks.length}`);
+    return { rendered, total: tasks.length };
+  }
+
+  /** The blueprint's visual style, expressed as a renderer template. */
+  private templateFor(blueprint: SiteBlueprint): string {
+    const map: Record<string, string> = {
+      MODERN: 'modern',
+      MINIMAL: 'minimal',
+      BOLD: 'bold',
+      CLASSIC: 'classic',
+      ELEGANT: 'classic',
+      RUSTIC: 'classic',
+    };
+    return map[blueprint.visualStyle] || 'modern';
   }
 
   // ---------- read (ownership-checked) ----------
@@ -272,19 +467,56 @@ export class WebsiteService {
     return this.persist(id, content);
   }
 
-  /** Generate an image with AI for a given slot. */
+  /**
+   * Generate an image with AI for a given slot.
+   *
+   * Goes through the brand's art direction like every other site image. It
+   * used to send the raw slot prompt — or, failing that, the site's TITLE —
+   * straight to the image model: no palette, no brand seed, a square crop for
+   * a wide hero, lettering from the title, and a base64 blob in the content.
+   */
   async generateImageForSlot(id: string, tenantId: string, path: string, prompt?: string) {
     const website = await this.owned(id, tenantId);
     const content = this.content(website);
-    const seed =
-      prompt ||
-      getPath(content, path.replace(/\.imageUrl$/, '.imagePrompt')) ||
-      content.meta.title;
-    const url = await this.aiEngineService.generateImage({
-      prompt: String(seed),
-      size: '1024x1024',
-      scope: id,
-    } as any);
+    const kit = await this.brandKit.find(tenantId);
+    const direction = buildArtDirection({
+      brandKey: `t-${tenantId}:${kit?.name || website.businessName}`,
+      style: kit?.style,
+      colors: [
+        content.theme.primaryColor,
+        content.theme.secondaryColor,
+        content.theme.accentColor,
+      ],
+    });
+
+    const place = [website.businessType, (website.description || '').slice(0, 100)]
+      .filter(Boolean)
+      .join(', ');
+    const subject =
+      prompt?.trim() ||
+      String(getPath(content, path.replace(/\.imageUrl$/, '.imagePrompt')) || '').trim() ||
+      `the place and work of a ${place || 'local business'}`;
+
+    // Sections are addressed by id (sections.<uuid>.data.imageUrl) or index.
+    const sectionKey = /^sections\.([^.]+)\.data\.imageUrl$/.exec(path)?.[1];
+    const isHero =
+      !!sectionKey &&
+      content.sections.find((x, i) => x.id === sectionKey || String(i) === sectionKey)?.type ===
+        'hero';
+    const isLogo = path === 'logo.imageUrl';
+
+    const url = await this.brandAssets.render(
+      direction,
+      {
+        kind: isHero ? 'hero' : /\.items\./.test(path) ? 'product' : 'detail',
+        aspect: isLogo ? 'square' : isHero ? 'wide' : 'landscape',
+        subject,
+      },
+      `t-${tenantId}`,
+    );
+    if (!url) {
+      throw new BadRequestException("L'image n'a pas pu etre generee. Veuillez reessayer.");
+    }
     this.applyImage(content, path, url);
     return this.persist(id, content);
   }
@@ -324,7 +556,13 @@ export class WebsiteService {
 
     let patch: any;
     try {
-      patch = await this.aiEngineService.generateThemePatch(instruction, content.theme);
+      const kit = await this.brandKit.find(tenantId);
+      patch = await this.aiEngineService.generateThemePatch(instruction, content.theme, {
+        primary: kit?.colors.primary,
+        secondary: kit?.colors.secondary,
+        accent: kit?.colors.accent,
+        fonts: kit ? [kit.fonts.heading, kit.fonts.body] : [],
+      });
     } catch (err: any) {
       throw new BadRequestException(`Design assistant failed: ${err.message}`);
     }
@@ -381,10 +619,14 @@ export class WebsiteService {
         businessType: website.businessType,
         description: website.description,
         language: content.meta.language,
+        existingSections: this.headings(content),
+        kit: await this.brandKit.find(tenantId),
       });
     } catch (err: any) {
-      this.logger.warn(`Section generation failed: ${err.message}`);
-      raw = { type: 'custom', data: { heading: request, subheading: '', body: '', items: [] } };
+      this.logger.error(`Section generation failed: ${err.message}`);
+      throw new BadRequestException(
+        `La génération IA de la section a échoué. Aucune section par défaut n'a été créée; veuillez réessayer. Détail: ${err.message}`,
+      );
     }
     const section = normalizeSection(raw);
     if (!section) throw new BadRequestException('Could not build section');
@@ -460,10 +702,25 @@ export class WebsiteService {
 
   // ---------- regenerate ----------
 
+  /**
+   * Fresh copy for the whole site.
+   *
+   * Regeneration used to call the copywriter without the blueprint, the trade
+   * category or the primary action, so it fell back to seven generic sections
+   * and a "get in touch" CTA: regenerating a restaurant site made it worse.
+   * It now re-plans the site exactly as creation does.
+   */
   async regenerateAll(id: string, tenantId: string) {
     const website = await this.owned(id, tenantId);
     const content = this.content(website);
-    const brand = await this.prisma.brand.findFirst({ where: { tenantId } });
+    const context = await this.businessContext.find(tenantId);
+    const kit = await this.brandKit.find(tenantId);
+    const products = this.productsOf(content);
+    const blueprint = planSite({
+      businessType: website.businessType,
+      description: website.description,
+      hasProducts: products.length > 0,
+    });
 
     let ai: any;
     try {
@@ -472,9 +729,16 @@ export class WebsiteService {
         businessType: website.businessType,
         description: website.description,
         services: website.services,
-        targetAudience: brand?.targetAudience || undefined,
-        tone: brand?.tone || 'professional',
+        targetAudience: context?.targetAudience || undefined,
+        tone: context?.tone || 'professional',
         language: content.meta.language,
+        currency: content.currency,
+        category: blueprint.label,
+        primaryAction: blueprint.primaryAction,
+        products,
+        testimonials: this.testimonialsOf(content),
+        kit,
+        blueprint: blueprint.sections.map((x) => ({ type: x.type, role: x.role, brief: x.brief })),
       });
     } catch (err: any) {
       throw new BadRequestException(`Regeneration failed: ${err.message}`);
@@ -495,19 +759,31 @@ export class WebsiteService {
         fontFamily: content.theme.fontFamily,
         template: content.theme.template,
         language: content.meta.language,
+        currency: content.currency,
       },
       ai,
     );
     rebuilt.logo = content.logo;
     rebuilt.contact = content.contact;
+    rebuilt.theme = { ...rebuilt.theme, ...content.theme };
+    this.hideEmptySections(rebuilt);
     return this.persist(id, rebuilt);
   }
 
+  /**
+   * Fresh copy for one section only.
+   *
+   * This used to regenerate the entire site and keep one section of it:
+   * N sections' worth of tokens for one, written without the blueprint and
+   * without knowing what the rest of the page said.
+   */
   async regenerateSection(id: string, tenantId: string, sectionId: string) {
     const website = await this.owned(id, tenantId);
     const content = this.content(website);
     const section = content.sections.find((s) => s.id === sectionId);
     if (!section) throw new NotFoundException('Section not found');
+    const kit = await this.brandKit.find(tenantId);
+    const others = this.headings(content).filter((_, i) => content.sections[i]?.id !== sectionId);
 
     try {
       if (section.type === 'custom') {
@@ -517,28 +793,108 @@ export class WebsiteService {
           businessType: website.businessType,
           description: website.description,
           language: content.meta.language,
+          existingSections: others,
+          kit,
         });
         const fresh = normalizeSection(raw);
         if (fresh) section.data = { ...fresh.data, request: section.data.request };
       } else {
-        // Re-run full generation and swap in the matching-type section's copy.
+        const context = await this.businessContext.find(tenantId);
+        const products = this.productsOf(content);
+        const blueprint = planSite({
+          businessType: website.businessType,
+          description: website.description,
+          hasProducts: products.length > 0,
+        });
+        const role = section.data.role || section.type;
+        const slot = blueprint.sections.find((x) => x.role === role) ||
+          blueprint.sections.find((x) => x.type === section.type) || {
+            type: section.type,
+            role,
+            brief: '',
+          };
+
         const ai = await this.aiEngineService.generateWebsiteContentJson({
           businessName: website.businessName,
           businessType: website.businessType,
           description: website.description,
           services: website.services,
+          targetAudience: context?.targetAudience || undefined,
+          tone: context?.tone || 'professional',
           language: content.meta.language,
+          currency: content.currency,
+          category: blueprint.label,
+          primaryAction: blueprint.primaryAction,
+          products,
+          testimonials: this.testimonialsOf(content),
+          existingSections: others,
+          kit,
+          blueprint: [{ type: slot.type, role: slot.role, brief: slot.brief }],
         });
-        const match = (ai?.sections || []).find((x: any) => x.type === section.type);
+        const match = (ai?.sections || [])[0];
         if (match?.data) {
+          const fresh = normalizeSection(match);
           const keepImages = this.pickImages(section.data);
-          section.data = { ...match.data, ...keepImages };
+          section.data = { ...(fresh?.data || match.data), role: section.data.role, ...keepImages };
         }
       }
     } catch (err: any) {
       throw new BadRequestException(`Section regeneration failed: ${err.message}`);
     }
     return this.persist(id, content);
+  }
+
+  /** "type: heading" for every section, in page order. */
+  private headings(content: WebsiteContent): { type: string; heading?: string }[] {
+    return content.sections.map((s) => ({
+      type: s.type,
+      heading: String(s.data?.heading || s.data?.title || '').slice(0, 120),
+    }));
+  }
+
+  /** The owner's products, with the prices they set, as currently on the page. */
+  private productsOf(content: WebsiteContent): { name: string; price?: string; description?: string }[] {
+    return content.sections
+      .filter((s) => s.type === 'products')
+      .flatMap((s) => (Array.isArray(s.data?.items) ? s.data.items : []))
+      .filter((item: any) => item?.name)
+      .map((item: any) => ({
+        name: String(item.name),
+        price: item.price ? String(item.price) : undefined,
+        description: item.description ? String(item.description) : undefined,
+      }));
+  }
+
+  /** Reviews already on the page: the owner typed or kept them. */
+  private testimonialsOf(content: WebsiteContent): { quote: string; author?: string; role?: string }[] {
+    return content.sections
+      .filter((s) => s.type === 'testimonials')
+      .flatMap((s) => (Array.isArray(s.data?.items) ? s.data.items : []))
+      .filter((item: any) => String(item?.quote || '').trim());
+  }
+
+  /**
+   * Sections the model could not honestly fill are hidden rather than
+   * deleted, so the owner finds them in the editor and can complete them:
+   * a reviews section without a real review, and a custom section (opening
+   * hours, practical details) left with a heading and nothing under it
+   * because the brief held no facts for it.
+   */
+  private hideEmptySections(content: WebsiteContent): void {
+    const filled = (item: any, keys: string[]) => keys.some((k) => String(item?.[k] || '').trim());
+    for (const section of content.sections) {
+      const items = Array.isArray(section.data?.items) ? section.data.items : [];
+      if (section.type === 'testimonials' && !items.some((item: any) => filled(item, ['quote']))) {
+        section.visible = false;
+      }
+      if (
+        section.type === 'custom' &&
+        !String(section.data?.body || '').trim() &&
+        !items.some((item: any) => filled(item, ['name', 'description']))
+      ) {
+        section.visible = false;
+      }
+    }
   }
 
   private pickImages(data: Record<string, any>): Record<string, any> {
@@ -595,6 +951,44 @@ export class WebsiteService {
       this.logger.error(`Vercel deployment failed: ${error.message}`);
       throw new BadRequestException(`Deployment failed: ${error.message}`);
     }
+  }
+
+  /**
+   * Take a site offline. Without this, publishWebsite()'s "only one published
+   * site" rule was a dead end: it told users to unpublish with no way to do it.
+   */
+  async unpublishWebsite(id: string, tenantId: string) {
+    const website = await this.owned(id, tenantId);
+    if (website.status !== 'PUBLISHED') {
+      throw new BadRequestException("Ce site n'est pas publié.");
+    }
+
+    // Take it off the internet BEFORE recording it as unpublished. The row
+    // used to be flipped to DRAFT on its own, leaving the Vercel deployment
+    // serving the page: the owner was told the site was down while anyone
+    // holding the URL could still read it.
+    const removed = await this.vercelDeploymentService.removeProject(website.subdomain);
+    if (!removed) {
+      throw new BadRequestException(
+        "Le site n'a pas pu etre retire de Vercel; il est donc toujours en ligne. " +
+          'Verifiez VERCEL_TOKEN puis reessayez.',
+      );
+    }
+
+    const updated = await this.prisma.website.update({
+      where: { id },
+      data: {
+        status: 'DRAFT',
+        publishedAt: null,
+        deploymentStatus: 'NONE',
+        vercelProjectId: null,
+        vercelDeploymentId: null,
+        vercelUrl: null,
+      } as any,
+    });
+
+    this.logger.log(`Website ${id} unpublished and removed from Vercel`);
+    return this.toResponse(updated);
   }
 
   async getDeploymentStatus(id: string, tenantId: string) {
@@ -670,7 +1064,7 @@ export class WebsiteService {
   private async resolveMapFromUrl(url: string): Promise<{ mapQuery?: string; address?: string }> {
     let full = (url || '').trim();
     if (!full) return {};
-    if (/(maps\.app\.goo\.gl|goo\.gl\/maps|g\.co\/kgs)/.test(full)) {
+    if (WebsiteService.isShortMapsUrl(full)) {
       full = await this.expandUrl(full);
     }
     const coords = this.extractCoords(full);
@@ -680,17 +1074,65 @@ export class WebsiteService {
     return {};
   }
 
-  private async expandUrl(url: string): Promise<string> {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 8000);
+  /** Google's short-link hosts, matched on the parsed hostname. */
+  private static readonly SHORT_MAPS_HOSTS = new Set(['maps.app.goo.gl', 'goo.gl', 'g.co']);
+  /** Where a short link may lead: Google only. */
+  private static isGoogleHost(host: string): boolean {
+    return (
+      WebsiteService.SHORT_MAPS_HOSTS.has(host) ||
+      /^(?:[\w-]+\.)*google\.[a-z.]{2,6}$/i.test(host)
+    );
+  }
+
+  private static parseHttps(url: string): URL | null {
     try {
-      const res = await fetch(url, { redirect: 'follow', signal: controller.signal });
-      return res.url || url;
+      const u = new URL(url);
+      return u.protocol === 'https:' ? u : null;
     } catch {
-      return url;
-    } finally {
-      clearTimeout(timer);
+      return null;
     }
+  }
+
+  private static isShortMapsUrl(url: string): boolean {
+    const u = WebsiteService.parseHttps(url);
+    if (!u) return false;
+    const host = u.hostname.toLowerCase();
+    if (host === 'maps.app.goo.gl') return true;
+    if (host === 'goo.gl') return u.pathname.startsWith('/maps');
+    if (host === 'g.co') return u.pathname.startsWith('/kgs');
+    return false;
+  }
+
+  /**
+   * Resolve a Google Maps short link server-side.
+   *
+   * The URL is user input, so this is an SSRF surface: the old unanchored
+   * regex accepted `http://169.254.169.254/?maps.app.goo.gl` and fetch then
+   * followed any redirect. Each hop is now checked — https, Google hosts only —
+   * and redirects are followed by hand so none can lead inside the network.
+   */
+  private async expandUrl(url: string): Promise<string> {
+    let current = url;
+    let lastSafe = url;
+    for (let hop = 0; hop < 5; hop++) {
+      const u = WebsiteService.parseHttps(current);
+      if (!u || !WebsiteService.isGoogleHost(u.hostname.toLowerCase())) return lastSafe;
+      lastSafe = current;
+
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 8000);
+      try {
+        const res = await fetch(u, { redirect: 'manual', signal: controller.signal });
+        const location = res.headers.get('location');
+        if (res.status < 300 || res.status >= 400 || !location) return current;
+        current = new URL(location, u).toString();
+      } catch {
+        return lastSafe;
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    return lastSafe;
   }
 
   private extractCoords(u: string): string | undefined {
@@ -730,9 +1172,11 @@ export class WebsiteService {
       id: w.id,
       subdomain: w.subdomain,
       status: w.status,
+      // The client polls this while the photography renders in the background.
+      visualStatus: w.visualStatus || 'READY',
       content: w.content,
       html: w.html,
-      previewUrl: w.vercelUrl || `https://${w.subdomain}.vercel.app`,
+      previewUrl: this.publicWebsiteUrl(w),
       vercelUrl: w.vercelUrl || undefined,
       deploymentStatus: w.deploymentStatus || 'NONE',
       publishedAt: w.publishedAt || undefined,
@@ -744,11 +1188,20 @@ export class WebsiteService {
       id: w.id,
       subdomain: w.subdomain,
       status: w.status,
+      visualStatus: w.visualStatus || 'READY',
       businessName: w.businessName,
-      previewUrl: w.vercelUrl || `https://${w.subdomain}.vercel.app`,
+      previewUrl: this.publicWebsiteUrl(w),
       vercelUrl: w.vercelUrl || undefined,
       deploymentStatus: w.deploymentStatus || 'NONE',
       updatedAt: w.updatedAt,
     };
+  }
+
+  private publicWebsiteUrl(w: any): string {
+    if (w.status === 'PUBLISHED' && w.vercelUrl) {
+      return w.vercelUrl;
+    }
+
+    return '';
   }
 }

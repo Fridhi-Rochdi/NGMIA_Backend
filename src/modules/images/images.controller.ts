@@ -1,61 +1,47 @@
-import { Controller, Get, Post, Put, Delete, Body, Param, UseGuards, Request, UseInterceptors, UploadedFile, UsePipes, ValidationPipe } from '@nestjs/common';
+import {
+  BadRequestException,
+  Controller,
+  Get,
+  Post,
+  Put,
+  Delete,
+  Body,
+  Param,
+  UseGuards,
+  Request,
+  UseInterceptors,
+  UploadedFile,
+} from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { diskStorage } from 'multer';
-import { extname } from 'path';
-import { Request as ExpressRequest } from 'express';
 import { ImagesService } from './images.service';
 import { GenerateImageDto, UpdateImageDto } from './images.dto';
-import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { AuthenticatedRequest } from '../../common/types/authenticated-request';
 import { TenantGuard } from '../../common/guards/tenant.guard';
+import { StorageService } from '../../common/storage/storage.service';
 
-interface UploadedFile {
-  fieldname: string;
+import { AiQuota } from '../../common/quota/ai-quota.decorator';
+interface UploadedImageFile {
   originalname: string;
-  encoding: string;
   mimetype: string;
   size: number;
-  destination: string;
-  filename: string;
-  path: string;
   buffer: Buffer;
-}
-
-interface AuthenticatedRequest {
-  user: {
-    sub: string;
-    email: string;
-    tenantId: string;
-    role: string;
-  };
-  tenant?: {
-    id: string;
-    name: string;
-    slug: string;
-    plan: string;
-  };
-  protocol?: string;
-  get?: (header: string) => string | undefined;
 }
 
 @ApiTags('Images')
 @Controller('images')
-@UseGuards(JwtAuthGuard, TenantGuard)
+@UseGuards(TenantGuard)
 @ApiBearerAuth()
 export class ImagesController {
-  constructor(private readonly imagesService: ImagesService) {}
+  constructor(
+    private readonly imagesService: ImagesService,
+    private readonly storageService: StorageService,
+  ) {}
 
   @Post('upload')
   @UseInterceptors(FileInterceptor('file', {
-    storage: diskStorage({
-      destination: './uploads',
-      filename: (req, file, cb) => {
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-        cb(null, `${uniqueSuffix}${extname(file.originalname)}`);
-      },
-    }),
-    fileFilter: (req, file, cb) => {
-      if (!file.mimetype.match(/\/(jpg|jpeg|png|gif|webp)$/)) {
+    fileFilter: (_req, file, cb) => {
+      if (!/^image\/(jpe?g|png|gif|webp)$/i.test(file.mimetype)) {
         return cb(new Error('Only image files are allowed!'), false);
       }
       cb(null, true);
@@ -63,14 +49,23 @@ export class ImagesController {
     limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
   }))
   async uploadFile(
-    @UploadedFile() file: UploadedFile,
+    @UploadedFile() file: UploadedImageFile,
     @Request() req: AuthenticatedRequest,
   ) {
     if (!file) {
-      throw new Error('No file uploaded');
+      throw new BadRequestException('No file uploaded');
     }
-    // Return full URL so frontend can access it
-    const imageUrl = `${req.protocol}://${req.get('host')}/uploads/${file.filename}`;
+
+    // Persist through StorageService so the file lands under the directory that
+    // main.ts actually serves at /uploads/ (storage/uploads).
+    const relativeUrl = await this.storageService.saveBuffer(
+      `images-${req.tenant.id}`,
+      file.buffer,
+      this.extensionFromMime(file.mimetype),
+    );
+
+    // Absolute URL: the frontend renders <img src> against its own origin.
+    const imageUrl = `${req.protocol}://${req.get('host')}${relativeUrl}`;
     return this.imagesService.createFromUpload(
       req.user.sub,
       req.tenant.id,
@@ -79,6 +74,7 @@ export class ImagesController {
     );
   }
 
+  @AiQuota('image.generate', 2)
   @Post('generate')
   async generate(@Body() dto: GenerateImageDto, @Request() req: AuthenticatedRequest) {
     return this.imagesService.generateImage(req.user.sub, req.tenant.id, dto);
@@ -102,5 +98,12 @@ export class ImagesController {
   @Delete(':id')
   async remove(@Param('id') id: string, @Request() req: AuthenticatedRequest) {
     return this.imagesService.remove(id, req.tenant.id);
+  }
+
+  private extensionFromMime(mimetype: string): string {
+    if (/webp$/i.test(mimetype)) return 'webp';
+    if (/gif$/i.test(mimetype)) return 'gif';
+    if (/png$/i.test(mimetype)) return 'png';
+    return 'jpg';
   }
 }

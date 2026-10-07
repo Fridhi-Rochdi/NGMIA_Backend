@@ -2,31 +2,18 @@ import { Controller, Get, Post, Put, Delete, Body, Param, Query, Res, UseGuards,
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { BrandingService } from './branding.service';
 import { GenerateBrandingDto, UpdateBrandingDto, RegenerateLogoDto, ModifyLogoDto } from './branding.dto';
-import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { AuthenticatedRequest } from '../../common/types/authenticated-request';
 import { TenantGuard } from '../../common/guards/tenant.guard';
 
-interface AuthenticatedRequest {
-  user: {
-    sub: string;
-    email: string;
-    tenantId: string;
-    role: string;
-  };
-  tenant?: {
-    id: string;
-    name: string;
-    slug: string;
-    plan: string;
-  };
-}
-
+import { AiQuota } from '../../common/quota/ai-quota.decorator';
 @ApiTags('Branding')
 @Controller('branding')
-@UseGuards(JwtAuthGuard, TenantGuard)
+@UseGuards(TenantGuard)
 @ApiBearerAuth()
 export class BrandingController {
   constructor(private readonly brandingService: BrandingService) {}
 
+  @AiQuota('branding.generate', 6)
   @Post('generate')
   async generate(@Body() dto: GenerateBrandingDto, @Request() req: AuthenticatedRequest) {
     return this.brandingService.generateBranding(req.user.sub, req.tenant.id, dto);
@@ -37,6 +24,7 @@ export class BrandingController {
     return this.brandingService.findAll(req.tenant.id);
   }
 
+  @AiQuota('branding.logo', 3)
   @Post(':id/logo/regenerate')
   @HttpCode(HttpStatus.OK)
   async regenerateLogo(

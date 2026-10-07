@@ -5,6 +5,9 @@ import { ConfigService } from '@nestjs/config';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { JwtStrategy } from './jwt.strategy';
+import { OtpService } from './otp.service';
+import { RefreshTokenService } from './refresh-token.service';
+import { MailModule } from '../../common/mail/mail.module';
 
 type JwtExpiresIn = NonNullable<
   NonNullable<JwtModuleOptions['signOptions']>['expiresIn']
@@ -12,6 +15,7 @@ type JwtExpiresIn = NonNullable<
 
 @Module({
   imports: [
+    MailModule,
     PassportModule.register({ defaultStrategy: 'jwt' }),
     JwtModule.registerAsync({
       inject: [ConfigService],
@@ -35,7 +39,7 @@ type JwtExpiresIn = NonNullable<
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService, JwtStrategy],
-  exports: [AuthService, JwtModule],
+  providers: [AuthService, JwtStrategy, OtpService, RefreshTokenService],
+  exports: [AuthService, JwtModule, OtpService, RefreshTokenService],
 })
 export class AuthModule {}

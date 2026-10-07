@@ -1,5 +1,4 @@
 ﻿import { Injectable, Logger } from '@nestjs/common';
-import * as crypto from 'crypto';
 
 export interface VercelDeploymentResult {
   projectId: string;
@@ -105,6 +104,43 @@ export class VercelDeploymentService {
       url: `https://${deployData.url}`,
       status: deployData.readyState === 'READY' ? 'READY' : 'BUILDING',
     };
+  }
+
+  /**
+   * Take a published site off the internet.
+   *
+   * Deleting the project removes it and every deployment under it, which is
+   * what "unpublish" has to mean: flipping a row to DRAFT while the Vercel URL
+   * keeps serving the page tells the owner their site is down when it is not.
+   *
+   * Returns false when the project could not be removed, so the caller can say
+   * so rather than report a takedown that did not happen. A project that is
+   * already gone (404) counts as success — the desired state is reached.
+   */
+  async removeProject(subdomain: string): Promise<boolean> {
+    if (!this.token) {
+      this.logger.warn('VERCEL_TOKEN absent: suppression du projet impossible');
+      return false;
+    }
+    const projectName = `ngmia-${subdomain}`.slice(0, 52).replace(/[^a-z0-9-]/g, '-');
+    try {
+      const res = await fetch(
+        this.appendTeam(`${this.baseUrl}/v9/projects/${projectName}`),
+        { method: 'DELETE', headers: this.getHeaders() },
+      );
+      if (res.ok || res.status === 404) {
+        this.logger.log(`Projet Vercel supprime: ${projectName}`);
+        return true;
+      }
+      this.logger.error(
+        `Suppression du projet Vercel ${projectName} refusee (${res.status}): ` +
+          `${(await res.text()).slice(0, 200)}`,
+      );
+      return false;
+    } catch (error: any) {
+      this.logger.error(`Suppression du projet Vercel echouee: ${error?.message}`);
+      return false;
+    }
   }
 
   async getDeploymentStatus(deploymentId: string): Promise<{ status: string; url?: string }> {

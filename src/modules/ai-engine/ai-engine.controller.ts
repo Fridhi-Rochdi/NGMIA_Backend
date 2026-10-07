@@ -4,33 +4,21 @@ import {
   Body, 
   HttpCode, 
   HttpStatus,
-  UseGuards,
-  Inject,
-  forwardRef,
 } from '@nestjs/common';
 import { AiEngineService } from './ai-engine.service';
-import { MenuService } from '../menu/menu.service';
 import { 
-  GenerateReelsDto, 
-  GenerateReelsResponse,
   GenerateTextOptions,
   GenerateImageOptions,
   GenerateBrandingOptions,
   GenerateSocialPostOptions,
 } from './ai-engine.dto';
-import { MenuGenerationDto } from '../menu/menu.dto';
-import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
-import { CurrentUser } from '../../common/decorators/current-user.decorator';
 
+import { AiQuota } from '../../common/quota/ai-quota.decorator';
 @Controller('ai-engine')
-@UseGuards(JwtAuthGuard)
 export class AiEngineController {
-  constructor(
-    private readonly aiEngineService: AiEngineService,
-    @Inject(forwardRef(() => MenuService))
-    private readonly menuService: MenuService,
-  ) {}
+  constructor(private readonly aiEngineService: AiEngineService) {}
 
+  @AiQuota('ai.text', 1)
   @Post('generate-text')
   @HttpCode(HttpStatus.OK)
   async generateText(@Body() options: GenerateTextOptions): Promise<{ content: string }> {
@@ -38,6 +26,7 @@ export class AiEngineController {
     return { content };
   }
 
+  @AiQuota('ai.image', 2)
   @Post('generate-image')
   @HttpCode(HttpStatus.OK)
   async generateImage(@Body() options: GenerateImageOptions): Promise<{ imageUrl: string }> {
@@ -45,32 +34,18 @@ export class AiEngineController {
     return { imageUrl };
   }
 
+  @AiQuota('ai.branding', 6)
   @Post('generate-branding')
   @HttpCode(HttpStatus.OK)
   async generateBranding(@Body() options: GenerateBrandingOptions) {
     return this.aiEngineService.generateBranding(options);
   }
 
+  @AiQuota('ai.social-post', 1)
   @Post('generate-social-post')
   @HttpCode(HttpStatus.OK)
   async generateSocialPost(@Body() options: GenerateSocialPostOptions): Promise<{ content: string }> {
     const content = await this.aiEngineService.generateSocialPost(options);
     return { content };
-  }
-
-  @Post('generate-reels')
-  @HttpCode(HttpStatus.OK)
-  async generateReels(@Body() dto: GenerateReelsDto): Promise<GenerateReelsResponse> {
-    return this.aiEngineService.generateReels(dto);
-  }
-
-  @Post('generate-menu')
-  @HttpCode(HttpStatus.CREATED)
-  async generateMenu(
-    @Body() dto: MenuGenerationDto,
-    @CurrentUser('tenantId') tenantId: string,
-    @CurrentUser('sub') userId: string,
-  ) {
-    return this.menuService.generateMenu(dto, tenantId, userId);
   }
 }

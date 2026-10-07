@@ -71,8 +71,9 @@ export class DashboardService {
           createdAt: { gte: previousMonth, lt: currentMonth },
         },
       }),
+      // An account whose token has expired cannot publish: it is not active.
       this.prisma.socialAccount.count({
-        where: { tenantId, isActive: true },
+        where: { tenantId, isActive: true, OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] },
       }),
       this.prisma.socialAccount.count({
         where: { tenantId, createdAt: { gte: currentMonth } },
@@ -83,10 +84,14 @@ export class DashboardService {
           createdAt: { gte: previousMonth, lt: currentMonth },
         },
       }),
+      // What will actually go out on its own. A generated calendar is
+      // SCHEDULED but not armed, and counting it promised posts the
+      // scheduler is not allowed to send.
       this.prisma.calendarEvent.count({
         where: {
           calendar: { tenantId },
           status: EventStatus.SCHEDULED,
+          autoPublish: true,
           scheduledAt: { gte: now },
         },
       }),
@@ -163,10 +168,12 @@ export class DashboardService {
         take: 4,
         select: { id: true, title: true, status: true, createdAt: true },
       }),
+      // Everything planned, armed or not: a post to publish by hand is still
+      // on the owner's agenda.
       this.prisma.calendarEvent.findMany({
         where: {
           calendar: { tenantId },
-          status: EventStatus.SCHEDULED,
+          status: { in: [EventStatus.SCHEDULED, EventStatus.DRAFT] },
           scheduledAt: { gte: now },
         },
         orderBy: { scheduledAt: 'asc' },
@@ -176,6 +183,7 @@ export class DashboardService {
           title: true,
           platform: true,
           scheduledAt: true,
+          autoPublish: true,
           calendar: { select: { id: true, name: true } },
         },
       }),

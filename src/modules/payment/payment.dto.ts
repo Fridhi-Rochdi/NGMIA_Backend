@@ -1,4 +1,4 @@
-import { IsString, IsNumber, IsOptional, IsBoolean, IsEnum, IsDecimal, Min } from 'class-validator';
+import { IsString, IsNumber, IsOptional, IsBoolean, Min } from 'class-validator';
 
 export enum SubscriptionStatus {
   ACTIVE = 'ACTIVE',
@@ -77,76 +77,8 @@ export class UpdatePlanDto {
   isActive?: boolean;
 }
 
-export class CreateSubscriptionDto {
+export class CreateCheckoutDto {
+  /** PlanItem id to subscribe to. */
   @IsString()
   planId: string;
-
-  @IsString()
-  @IsOptional()
-  stripeSubscriptionId?: string;
-}
-
-export class UpdateSubscriptionDto {
-  @IsEnum(SubscriptionStatus)
-  @IsOptional()
-  status?: SubscriptionStatus;
-
-  @IsBoolean()
-  @IsOptional()
-  cancelAtPeriodEnd?: boolean;
-}
-
-export class CreateInvoiceDto {
-  @IsString()
-  subscriptionId: string;
-
-  @IsNumber()
-  @Min(0)
-  amount: number;
-
-  @IsString()
-  @IsOptional()
-  currency?: string;
-}
-
-export class CreatePaymentMethodDto {
-  @IsString()
-  stripePaymentMethodId: string;
-
-  @IsString()
-  @IsOptional()
-  type?: string;
-
-  @IsString()
-  @IsOptional()
-  brand?: string;
-
-  @IsString()
-  @IsOptional()
-  last4?: string;
-
-  @IsNumber()
-  @IsOptional()
-  expMonth?: number;
-
-  @IsNumber()
-  @IsOptional()
-  expYear?: number;
-
-  @IsBoolean()
-  @IsOptional()
-  isDefault?: boolean;
-}
-
-export class CheckoutSessionDto {
-  @IsString()
-  planId: string;
-
-  @IsString()
-  @IsOptional()
-  successUrl?: string;
-
-  @IsString()
-  @IsOptional()
-  cancelUrl?: string;
 }

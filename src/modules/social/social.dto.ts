@@ -21,6 +21,45 @@ export class GenerateSocialPostDto {
   hashtags?: string[];
 }
 
+export class CreateSocialPostDto {
+  @ApiProperty({ description: 'Post body written by the user' })
+  @IsString()
+  content: string;
+
+  @ApiProperty({ enum: ['FACEBOOK', 'INSTAGRAM', 'TWITTER', 'LINKEDIN', 'TIKTOK', 'YOUTUBE'] })
+  @IsEnum(['FACEBOOK', 'INSTAGRAM', 'TWITTER', 'LINKEDIN', 'TIKTOK', 'YOUTUBE'])
+  platform: string;
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsString()
+  title?: string;
+
+  @ApiProperty({ enum: ['DRAFT', 'GENERATED', 'PUBLISHED', 'ARCHIVED'], required: false })
+  @IsOptional()
+  @IsEnum(['DRAFT', 'GENERATED', 'PUBLISHED', 'ARCHIVED'])
+  status?: string;
+
+  @ApiProperty({ type: [String], required: false })
+  @IsOptional()
+  @IsArray()
+  hashtags?: string[];
+
+  @ApiProperty({ type: [String], required: false })
+  @IsOptional()
+  @IsArray()
+  mediaUrls?: string[];
+
+  @ApiProperty({
+    required: false,
+    description:
+      'Accepted for client convenience but NOT persisted: Content has no schedule column. Use the planner module (CalendarEvent) to schedule a post.',
+  })
+  @IsOptional()
+  @IsDateString()
+  scheduledAt?: string;
+}
+
 export class UpdateSocialPostDto {
   @ApiProperty({ required: false })
   @IsOptional()

@@ -25,6 +25,43 @@ export interface QrCodeResponse {
 
 @Injectable()
 export class QrCodeService {
+  constructor(private prisma: PrismaService) {}
+
+  /**
+   * Generate a QR code and record it for the tenant, so GET /qr-code can list
+   * previously generated codes instead of always returning an empty array.
+   */
+  async generateAndStore(
+    meta: { name: string; type: string },
+    options: QrCodeOptions,
+    tenantId: string,
+    userId: string,
+  ): Promise<QrCodeResponse> {
+    const result = await this.generateQrCode(options);
+    if (!result.success || !result.data) return result;
+
+    try {
+      await this.createQrCode(
+        {
+          name: meta.name,
+          type: meta.type,
+          data: result.data.content,
+          url: result.data.base64,
+          size: options.size,
+          color: options.color?.dark,
+          bgColor: options.color?.light,
+        },
+        tenantId,
+        userId,
+      );
+    } catch (error) {
+      // Persistence is best-effort: never fail the user's download over it.
+      console.error('[QrCodeService] Failed to persist QR code:', error);
+    }
+
+    return result;
+  }
+
   async generateQrCode(options: QrCodeOptions): Promise<QrCodeResponse> {
     try {
       const {
@@ -75,16 +112,23 @@ export class QrCodeService {
     });
   }
 
+  buildMenuContent(restaurantName: string, menuUrl: string): string {
+    return `${menuUrl}?restaurant=${encodeURIComponent(restaurantName)}&type=menu`;
+  }
+
   async generateMenuQrCode(
     restaurantName: string,
     menuUrl: string,
     options?: Partial<QrCodeOptions>,
   ): Promise<QrCodeResponse> {
-    const fullUrl = `${menuUrl}?restaurant=${encodeURIComponent(restaurantName)}&type=menu`;
     return this.generateQrCode({
-      content: fullUrl,
+      content: this.buildMenuContent(restaurantName, menuUrl),
       ...options,
     });
+  }
+
+  buildPosterContent(campaignName: string, posterUrl: string): string {
+    return `${posterUrl}?campaign=${encodeURIComponent(campaignName)}&type=poster`;
   }
 
   async generatePosterQrCode(
@@ -92,62 +136,65 @@ export class QrCodeService {
     posterUrl: string,
     options?: Partial<QrCodeOptions>,
   ): Promise<QrCodeResponse> {
-    const fullUrl = `${posterUrl}?campaign=${encodeURIComponent(campaignName)}&type=poster`;
     return this.generateQrCode({
-      content: fullUrl,
+      content: this.buildPosterContent(campaignName, posterUrl),
       ...options,
     });
   }
 
-  async generateVCardQrCode(
-    contactInfo: {
-      name: string;
-      phone?: string;
-      email?: string;
-      website?: string;
-      address?: string;
-      company?: string;
-    },
-    options?: Partial<QrCodeOptions>,
-  ): Promise<QrCodeResponse> {
-    const vCard = [
+  buildVCardContent(contactInfo: {
+    name: string;
+    jobTitle?: string;
+    phone?: string;
+    email?: string;
+    website?: string;
+    address?: string;
+    company?: string;
+  }): string {
+    return [
       'BEGIN:VCARD',
       'VERSION:3.0',
       `FN:${contactInfo.name}`,
       contactInfo.company ? `ORG:${contactInfo.company}` : '',
+      contactInfo.jobTitle ? `TITLE:${contactInfo.jobTitle}` : '',
       contactInfo.phone ? `TEL:${contactInfo.phone}` : '',
       contactInfo.email ? `EMAIL:${contactInfo.email}` : '',
       contactInfo.website ? `URL:${contactInfo.website}` : '',
       contactInfo.address ? `ADR:;;${contactInfo.address}` : '',
       'END:VCARD',
-    ].filter(line => line !== '').join('\n');
+    ].filter((line) => line !== '').join('\n');
+  }
 
+  async generateVCardQrCode(
+    contactInfo: Parameters<QrCodeService['buildVCardContent']>[0],
+    options?: Partial<QrCodeOptions>,
+  ): Promise<QrCodeResponse> {
     return this.generateQrCode({
-      content: vCard,
+      content: this.buildVCardContent(contactInfo),
       ...options,
     });
   }
 
+  buildWifiContent(wifiConfig: {
+    ssid: string;
+    password: string;
+    encryption: 'WPA' | 'WEP' | 'nopass';
+    hidden?: boolean;
+  }): string {
+    return `WIFI:T:${wifiConfig.encryption};S:${wifiConfig.ssid};P:${wifiConfig.password};H:${wifiConfig.hidden ? 'true' : 'false'};;`;
+  }
+
   async generateWifiQrCode(
-    wifiConfig: {
-      ssid: string;
-      password: string;
-      encryption: 'WPA' | 'WEP' | 'nopass';
-      hidden?: boolean;
-    },
+    wifiConfig: Parameters<QrCodeService['buildWifiContent']>[0],
     options?: Partial<QrCodeOptions>,
   ): Promise<QrCodeResponse> {
-    const wifiString = `WIFI:T:${wifiConfig.encryption};S:${wifiConfig.ssid};P:${wifiConfig.password};H:${wifiConfig.hidden ? 'true' : 'false'};;`;
-    
     return this.generateQrCode({
-      content: wifiString,
+      content: this.buildWifiContent(wifiConfig),
       ...options,
     });
   }
 
   // ==================== Database CRUD Methods ====================
-
-  constructor(private prisma: PrismaService) {}
 
   async getQrCodes(tenantId: string) {
     return this.prisma.qrCode.findMany({

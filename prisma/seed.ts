@@ -17,7 +17,7 @@ async function main() {
   console.log('Tenant:', tenant.id);
 
   // 2. Create user
-  const hashedPassword = await bcrypt.hash('Password123!', 10);
+  const hashedPassword = await bcrypt.hash('Password123!', 12);
   const user = await prisma.user.upsert({
     where: {
       email_tenantId: {

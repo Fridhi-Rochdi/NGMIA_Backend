@@ -2,31 +2,18 @@ import { Controller, Get, Post, Put, Delete, Body, Param, UseGuards, Request } f
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { ContentService } from './content.service';
 import { GenerateContentDto, UpdateContentDto } from './content.dto';
-import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { AuthenticatedRequest } from '../../common/types/authenticated-request';
 import { TenantGuard } from '../../common/guards/tenant.guard';
 
-interface AuthenticatedRequest {
-  user: {
-    sub: string;
-    email: string;
-    tenantId: string;
-    role: string;
-  };
-  tenant?: {
-    id: string;
-    name: string;
-    slug: string;
-    plan: string;
-  };
-}
-
+import { AiQuota } from '../../common/quota/ai-quota.decorator';
 @ApiTags('Content')
 @Controller('content')
-@UseGuards(JwtAuthGuard, TenantGuard)
+@UseGuards(TenantGuard)
 @ApiBearerAuth()
 export class ContentController {
   constructor(private readonly contentService: ContentService) {}
 
+  @AiQuota('content.generate', 1, 2)
   @Post('generate')
   async generate(@Body() dto: GenerateContentDto, @Request() req: AuthenticatedRequest) {
     return this.contentService.generateContent(req.user.sub, req.tenant.id, dto);

@@ -1,9 +1,12 @@
-import { Injectable, NotFoundException, Logger, ServiceUnavailableException } from '@nestjs/common';
+import { Injectable, NotFoundException, Logger } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
-import { AiEngineService } from '../ai-engine/ai-engine.service';
-import { GenerateBrandingDto, UpdateBrandingDto, RegenerateLogoDto } from './branding.dto';
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const sharp = require('sharp');
+import { AiEngineService } from '../ai-engine/ai-engine.service';
+import { GenerateBrandingDto, UpdateBrandingDto, RegenerateLogoDto } from './branding.dto';
+import { LogoAssetService } from '../../common/brand-kit/logo-asset.service';
+import { StorageService } from '../../common/storage/storage.service';
+import { BusinessContextService } from '../business-context/business-context.service';
 
 @Injectable()
 export class BrandingService {
@@ -12,6 +15,9 @@ export class BrandingService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly aiEngine: AiEngineService,
+    private readonly logoAssets: LogoAssetService,
+    private readonly storage: StorageService,
+    private readonly businessContext: BusinessContextService,
   ) {}
 
   /**
@@ -22,44 +28,36 @@ export class BrandingService {
   async generateBranding(userId: string, tenantId: string, dto: GenerateBrandingDto) {
     this.logger.log(`Generating branding for "${dto.brandName}" (${dto.industry})`);
 
-    let branding: Awaited<ReturnType<AiEngineService['generateBranding']>>;
-    try {
-      branding = await this.aiEngine.generateBranding({
-        brandName: dto.brandName,
-        industry: dto.industry,
-        description: dto.description,
-        style: dto.style || 'modern',
-        values: dto.values,
-      });
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      this.logger.error(`Brand strategy generation failed: ${reason}`);
-      throw new ServiceUnavailableException(
-        `La génération IA du branding a échoué: ${reason}. Aucune identité par défaut n'a été créée; veuillez réessayer.`,
-      );
-    }
+    // Step 1: Generate brand strategy via LLM, from the whole business
+    // profile: offer, audience, tone and language, not just a name and a line.
+    const context = await this.businessContext.find(tenantId);
+    const branding = await this.aiEngine.generateBranding({
+      brandName: dto.brandName,
+      industry: dto.industry,
+      description: dto.description,
+      style: dto.style || 'modern',
+      values: dto.values,
+      businessType: context?.businessType,
+      services: context?.services,
+      targetAudience: context?.targetAudience || undefined,
+      tone: context?.tone,
+      language: context?.language,
+    });
 
     this.logger.log(`Brand strategy generated — palette: ${branding.colorPalette}`);
 
+    // Extract primary/secondary/accent colors from the palette
     const colorArray = branding.colorPalette.split(',').map(c => c.trim());
-    if (colorArray.length !== 3 || colorArray.some(color => !/^#[0-9a-f]{6}$/i.test(color))) {
-      this.logger.error(`Invalid AI color palette: ${branding.colorPalette}`);
-      throw new ServiceUnavailableException(
-        `La génération IA du branding a retourné une palette invalide: ${branding.colorPalette}. Aucune identité par défaut n'a été créée; veuillez réessayer.`,
-      );
-    }
-    const [primaryColor, secondaryColor, accentColor] = colorArray;
+    const primaryColor = colorArray[0] || '#3B82F6';
+    const secondaryColor = colorArray[1] || '#1E3A5F';
+    const accentColor = colorArray[2] || '#F59E0B';
 
     // Step 2: Generate logo via NVIDIA NIM IMAGE GENERATION API (real PNG/SVG)
-    let logoUrl: string;
+    let logoUrl: string | null = null;
     try {
-      const logoDesc = [
-        branding.logoConcept,
-        branding.visualStyle,
-        branding.personality,
-        branding.messagingAngle,
-      ].filter(Boolean).join(' ');
-      logoUrl = await this.aiEngine.generateLogo({
+      // The concept written for the mark, not the marketing description.
+      const logoDesc = branding.logoConcept || branding.description || dto.description || '';
+      logoUrl = await this.generateLogoWithRetry({
         brandName: dto.brandName,
         industry: dto.industry,
         style: dto.style || 'modern',
@@ -68,14 +66,23 @@ export class BrandingService {
         secondaryColor,
         accentColor,
       });
-      const logoType = logoUrl.startsWith('data:image/png') ? 'PNG image API' : 'image API';
-      this.logger.log(`Logo generated successfully via ${logoType} (${logoUrl.substring(0, 50)}...)`);
+      this.logger.log('Logo genere');
     } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      this.logger.error(`Logo generation failed: ${reason}`);
-      throw new ServiceUnavailableException(
-        `La génération IA du logo a échoué: ${reason}. Aucune identité par défaut n'a été créée; veuillez réessayer.`,
-      );
+      this.logger.error(`Logo generation failed, continuing without logo: ${error}`);
+      // Branding without logo is still usable — user can regenerate later
+    }
+
+    // The generator hands back a base64 data URL. Persisted as-is that is a
+    // megabyte of text in the row, re-inlined into every document showing the
+    // logo. Store it as files and derive the variants an identity needs.
+    let logoVariants: any = null;
+    if (logoUrl) {
+      const patch = await this.storeLogo(logoUrl, tenantId);
+      logoUrl = patch.logo;
+      logoVariants = patch.logoVariants;
+      if (logoVariants) {
+        this.logger.log(`Logo stocke: ${Object.keys(logoVariants).join(', ')}`);
+      }
     }
 
     // Generate unique slug (append timestamp to avoid duplicates)
@@ -86,26 +93,32 @@ export class BrandingService {
     const slug = `${baseSlug}-${Date.now()}`;
 
     const [headingFont, bodyFont] = branding.typography.split(',').map(f => f.trim());
-    if (!headingFont || !bodyFont) {
-      this.logger.error(`Invalid AI typography: ${branding.typography}`);
-      throw new ServiceUnavailableException(
-        `La génération IA du branding a retourné une typographie invalide: ${branding.typography}. Aucune identité par défaut n'a été créée; veuillez réessayer.`,
-      );
-    }
 
     const brand = await this.prisma.brand.create({
       data: {
         name: dto.brandName,
         slug,
         logo: logoUrl,
+        logoVariants: logoVariants as any,
         tagline: branding.tagline,
         description: branding.description,
-        tone: dto.style || 'professional',
+        // Tone of VOICE. The form's `style` is a visual choice and used to be
+        // stored here, so "modern" reached every copy prompt as a tone.
+        tone: context?.tone || 'professional',
         industry: dto.industry,
+        targetAudience: context?.targetAudience || null,
         primaryColor,
         secondaryColor,
         accentColor,
-        fontFamily: headingFont,
+        // Both fonts, as a CSS font-family list; BrandKit splits it.
+        fontFamily: [headingFont, bodyFont].filter(Boolean).join(', ') || 'Inter',
+        mission: branding.mission || null,
+        vision: branding.vision || null,
+        personality: branding.personality || null,
+        messagingAngle: branding.messagingAngle || null,
+        voice: branding.voice || null,
+        logoConcept: branding.logoConcept || null,
+        visualStyle: branding.visualStyle || null,
         tenantId,
       },
     });
@@ -117,9 +130,6 @@ export class BrandingService {
         vision: branding.vision,
         colorPalette: colorArray,
         typography: { heading: headingFont, body: bodyFont },
-        personality: branding.personality,
-        visualStyle: branding.visualStyle,
-        messagingAngle: branding.messagingAngle,
         logoDescription: branding.logoConcept || branding.description || dto.description,
         hasLogo: !!logoUrl,
       },
@@ -130,21 +140,81 @@ export class BrandingService {
    * Regenerate only the logo for an existing brand.
    * Uses the stored brand colors and description.
    */
+  /**
+   * Persist a freshly generated logo as files and return the DB patch.
+   * Shared by generate / regenerate / modify so a logo can never be written
+   * back as a base64 blob through one path and as a file through another.
+   */
+  /**
+   * Generate a logo, sweeping failures.
+   *
+   * The image provider returns intermittent 500s. Menu and website photography
+   * goes through BrandAssetService.renderAll(), which retries the slots that
+   * missed; the logo call had no such sweep, so a single wobble left a brand
+   * permanently without its logo — and a brand without a logo is not a brand.
+   *
+   * Failures cluster in time, so a short pause between attempts is what makes
+   * the difference, not more attempts back to back.
+   */
+  private async generateLogoWithRetry(
+    options: Parameters<AiEngineService['generateLogo']>[0],
+    attempts = Number(process.env.LOGO_ATTEMPTS || 4),
+  ): Promise<string> {
+    let lastError: Error = new Error('Logo generation failed');
+
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        // This called itself, not the engine — unbounded recursion that blew
+        // the stack on the first attempt, so EVERY logo generation failed with
+        // "Maximum call stack size exceeded" and every brand was saved without
+        // one. The sweep below never ran a single real attempt.
+        const url = await this.aiEngine.generateLogo(options);
+        if (attempt > 1) this.logger.log(`Logo obtenu a la tentative ${attempt}`);
+        return url;
+      } catch (error: any) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+        // A rejected request will be rejected identically next time; only
+        // transient faults are worth another attempt.
+        if (!/\b(429|5\d\d)\b|timeout|ETIMEDOUT|ECONNRESET|repondu en/i.test(lastError.message)) {
+          throw lastError;
+        }
+        this.logger.warn(
+          `Logo, tentative ${attempt}/${attempts} echouee: ${lastError.message.slice(0, 90)}`,
+        );
+        if (attempt < attempts) {
+          await new Promise((r) => setTimeout(r, 6000 * attempt));
+        }
+      }
+    }
+
+    throw lastError;
+  }
+
+  private async storeLogo(logoUrl: string, tenantId: string) {
+    const stored = await this.logoAssets.store(logoUrl, `t-${tenantId}`);
+    if (!stored) return { logo: logoUrl, logoVariants: null as any };
+    return {
+      logo: stored.primary,
+      logoVariants: Object.fromEntries(
+        Object.entries(stored).filter(([, v]) => Boolean(v)),
+      ) as any,
+    };
+  }
+
   async regenerateLogo(id: string, tenantId: string, dto?: RegenerateLogoDto) {
     const brand = await this.findOne(id, tenantId);
 
     this.logger.log(`Regenerating logo for brand "${brand.name}"`);
 
     // Build a logo description from the brand data
-    const logoDescription = dto?.logoDescription 
-      || `Modern ${brand.tone} style logo for ${brand.name}, ${brand.industry} industry, using ${brand.primaryColor} and ${brand.accentColor} colors, professional and memorable`;
+    const logoDescription = dto?.logoDescription || brand.logoConcept || '';
 
     let logoUrl: string;
     try {
-      logoUrl = await this.aiEngine.generateLogo({
+      logoUrl = await this.generateLogoWithRetry({
         brandName: brand.name,
-        industry: brand.industry || 'technology',
-        style: brand.tone || 'modern',
+        industry: brand.industry || undefined,
+        style: (brand.visualStyle || 'modern').toLowerCase(),
         logoDescription,
         primaryColor: brand.primaryColor,
         secondaryColor: brand.secondaryColor,
@@ -156,17 +226,16 @@ export class BrandingService {
       throw new Error('Échec de la régénération du logo. Veuillez réessayer.');
     }
 
-    // Update the brand with the new logo
+    // Update the brand with the new logo, stored as files.
     return this.prisma.brand.update({
       where: { id },
-      data: { logo: logoUrl },
+      data: await this.storeLogo(logoUrl, tenantId),
     });
   }
 
   /**
    * Download the logo in the requested format.
    * Converts the stored data URI to a raw buffer with proper MIME type.
-   * Supports: base64 data URIs (PNG/JPEG/WEBP), SVG text, double-prefixed URIs, plain URLs.
    */
   async downloadLogo(id: string, tenantId: string, format: string) {
     const brand = await this.findOne(id, tenantId);
@@ -175,103 +244,94 @@ export class BrandingService {
       throw new NotFoundException('Aucun logo trouvé pour cette marque. Générez-en un d\'abord.');
     }
 
-    const logoDataUri = brand.logo;
-    let buffer: Buffer;
+    // Logos are stored as files now; brands created before that still hold a
+    // base64 data URI, so both shapes have to be readable.
     let originalMime: string;
+    let buffer: Buffer;
 
-    // --- Case 1: Base64 data URI (e.g., data:image/png;base64,iVBOR...) ---
-    // Use [\s\S]+ instead of .+ to match base64 across multiple lines
-    const base64Match = logoDataUri.match(/^data:(image\/[^;]+);base64,([\s\S]+)$/i);
-    if (base64Match) {
-      originalMime = base64Match[1].toLowerCase();
-      let rawBase64 = base64Match[2].replace(/\s+/g, '');
-
-      // Handle double-prefixed data URIs (data:image/png;base64,data:image/png;base64,...)
-      const doublePrefixMatch = rawBase64.match(/^data:image\/[^;]+;base64,([\s\S]+)$/i);
-      if (doublePrefixMatch) {
-        this.logger.warn('Detected double-prefixed data URI, unwrapping inner base64');
-        rawBase64 = doublePrefixMatch[1].replace(/\s+/g, '');
+    if (brand.logo.startsWith('/uploads/')) {
+      const stored = this.storage.readByPublicUrl(brand.logo);
+      if (!stored) {
+        throw new NotFoundException('Le fichier du logo est introuvable. Régénérez le logo.');
       }
-
-      buffer = Buffer.from(rawBase64, 'base64');
-      this.logger.log(`Decoded base64 logo: ${originalMime}, raw=${rawBase64.length} chars → buffer=${buffer.length} bytes`);
-
-      if (buffer.length === 0) {
-        throw new Error('Le logo décodé est vide. Le format base64 est peut-être corrompu. Régénérez le logo.');
-      }
+      originalMime = stored.mime.toLowerCase();
+      buffer = stored.buffer;
     } else {
-      // --- Case 2: SVG text data URI (data:image/svg+xml,<svg>...) without base64 ---
-      const svgTextMatch = logoDataUri.match(/^data:image\/svg\+xml,([\s\S]+)$/i);
-      if (svgTextMatch) {
-        originalMime = 'image/svg+xml';
-        const svgContent = decodeURIComponent(svgTextMatch[1]);
-        buffer = Buffer.from(svgContent, 'utf-8');
-        this.logger.log(`Decoded SVG text logo: ${buffer.length} bytes`);
-      } else if (/^<svg[\s\S]*<\/svg>\s*$/i.test(logoDataUri.trim())) {
-        // --- Case 3: Raw SVG string ---
-        originalMime = 'image/svg+xml';
-        buffer = Buffer.from(logoDataUri.trim(), 'utf-8');
-        this.logger.log(`Raw SVG logo: ${buffer.length} bytes`);
-      } else if (/^https?:\/\//i.test(logoDataUri)) {
-        // --- Case 4: Plain URL ---
-        this.logger.log(`Fetching logo from URL: ${logoDataUri.substring(0, 80)}...`);
-        try {
-          const response = await fetch(logoDataUri);
-          if (!response.ok) throw new Error(`HTTP ${response.status}`);
-          const arrayBuffer = await response.arrayBuffer();
-          buffer = Buffer.from(arrayBuffer);
-          const contentType = response.headers.get('content-type') || 'image/png';
-          originalMime = contentType.split(';')[0].trim().toLowerCase();
-          this.logger.log(`Fetched logo from URL: ${buffer.length} bytes, mime=${originalMime}`);
-        } catch (fetchError) {
-          this.logger.error(`Failed to fetch logo URL: ${fetchError}`);
-          throw new Error('Impossible de télécharger le logo depuis l\'URL distante. Régénérez le logo.');
-        }
-      } else {
-        this.logger.error(`Unrecognized logo format. Starts with: ${logoDataUri.substring(0, 60)}`);
+      const match = brand.logo.match(/^data:(image\/[^;]+);base64,([\s\S]+)$/);
+      if (!match) {
         throw new Error('Format de logo invalide. Régénérez le logo.');
       }
+      originalMime = match[1].toLowerCase();
+      buffer = Buffer.from(match[2].replace(/\s+/g, ''), 'base64');
     }
 
-    // --- Format conversion ---
-    const targetFormat = (format || 'original').toLowerCase();
-    const extensionByMime: Record<string, string> = {
-      'image/png': 'png',
-      'image/jpeg': 'jpg',
-      'image/jpg': 'jpg',
-      'image/webp': 'webp',
-      'image/svg+xml': 'svg',
+    if (!buffer.length) {
+      throw new Error('Le logo décodé est vide. Régénérez le logo.');
+    }
+
+    const isSvg = originalMime.includes('svg');
+    const requested = (format || 'original').toLowerCase();
+
+    const TARGETS: Record<string, { mime: string; ext: string; sharp?: 'png' | 'jpeg' | 'webp' }> = {
+      svg: { mime: 'image/svg+xml', ext: 'svg' },
+      png: { mime: 'image/png', ext: 'png', sharp: 'png' },
+      jpg: { mime: 'image/jpeg', ext: 'jpg', sharp: 'jpeg' },
+      jpeg: { mime: 'image/jpeg', ext: 'jpg', sharp: 'jpeg' },
+      webp: { mime: 'image/webp', ext: 'webp', sharp: 'webp' },
     };
 
-    let mimeType = originalMime;
-    let extension = extensionByMime[originalMime] || originalMime.split('/')[1] || 'png';
+    const ORIGINAL: Record<string, { mime: string; ext: string }> = {
+      'image/svg+xml': { mime: 'image/svg+xml', ext: 'svg' },
+      'image/png': { mime: 'image/png', ext: 'png' },
+      'image/jpeg': { mime: 'image/jpeg', ext: 'jpg' },
+      'image/webp': { mime: 'image/webp', ext: 'webp' },
+    };
 
-    // Only attempt sharp conversion for raster formats (not SVG)
-    if (targetFormat !== 'original' && originalMime !== 'image/svg+xml') {
-      const formatMap: Record<string, { mime: string; ext: string }> = {
-        png: { mime: 'image/png', ext: 'png' },
-        jpg: { mime: 'image/jpeg', ext: 'jpg' },
-        jpeg: { mime: 'image/jpeg', ext: 'jpg' },
-        webp: { mime: 'image/webp', ext: 'webp' },
-      };
-      const target = formatMap[targetFormat];
-      if (target && target.ext !== extension) {
+    let mimeType: string;
+    let extension: string;
+
+    // Asking for SVG when the source is a raster image is impossible; serve the
+    // original rather than handing back a file whose extension lies.
+    if (requested === 'svg' && !isSvg) {
+      const source = ORIGINAL[originalMime] || { mime: originalMime, ext: 'png' };
+      mimeType = source.mime;
+      extension = source.ext;
+    } else if (requested === 'original' || !TARGETS[requested]) {
+      const source = ORIGINAL[originalMime] || { mime: originalMime, ext: 'png' };
+      mimeType = source.mime;
+      extension = source.ext;
+    } else {
+      const target = TARGETS[requested];
+      const alreadyRight = ORIGINAL[originalMime]?.ext === target.ext;
+
+      if (alreadyRight || !target.sharp) {
+        mimeType = target.mime;
+        extension = target.ext;
+      } else {
+        // Real conversion. sharp reads SVG as well as raster input, so this is
+        // what turns an SVG logo into an actual PNG instead of merely
+        // relabelling the bytes — which produced files no viewer could open.
         try {
-          this.logger.log(`Converting logo from ${extension} to ${target.ext}`);
-          buffer = await sharp(buffer)
-            .toFormat(target.ext as 'png' | 'jpeg' | 'webp')
+          buffer = await sharp(buffer, { density: 384 })
+            .resize(1024, 1024, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
+            .toFormat(target.sharp, target.sharp === 'jpeg' ? { quality: 92 } : {})
             .toBuffer();
           mimeType = target.mime;
           extension = target.ext;
-          this.logger.log(`Converted logo: ${buffer.length} bytes`);
-        } catch (convError) {
-          this.logger.error(`Format conversion failed (${extension}→${target.ext}): ${convError}. Sending original format.`);
-          // Fall back to original format
+        } catch (conversionError) {
+          this.logger.error(
+            `Logo conversion ${originalMime} -> ${target.ext} failed: ${conversionError}. Serving the original.`,
+          );
+          const source = ORIGINAL[originalMime] || { mime: originalMime, ext: 'png' };
+          mimeType = source.mime;
+          extension = source.ext;
         }
       }
     }
 
-    this.logger.log(`Downloading logo for brand "${brand.name}" as ${extension} (${buffer.length} bytes)`);
+    this.logger.log(
+      `Downloading logo for brand "${brand.name}" as ${extension} (${buffer.length} bytes, ${mimeType})`,
+    );
 
     return { buffer, mimeType, extension };
   }
@@ -304,18 +364,17 @@ export class BrandingService {
     const primaryColor = dto.primaryColor || brand.primaryColor;
     const secondaryColor = dto.secondaryColor || brand.secondaryColor;
     const accentColor = dto.accentColor || brand.accentColor;
-    const style = dto.style || brand.tone || 'modern';
+    const style = dto.style || (brand.visualStyle || 'modern').toLowerCase();
 
-    const logoDescription = dto.logoDescription 
-      || `Modern ${style} style logo for ${brand.name}, ${brand.industry || 'technology'} industry, professional and memorable`;
+    const logoDescription = dto.logoDescription || brand.logoConcept || '';
 
     this.logger.log(`Modifying logo for brand "${brand.name}"`);
 
     let logoUrl: string;
     try {
-      logoUrl = await this.aiEngine.generateLogo({
+      logoUrl = await this.generateLogoWithRetry({
         brandName: brand.name,
-        industry: brand.industry || 'technology',
+        industry: brand.industry || undefined,
         style,
         logoDescription,
         primaryColor,
@@ -329,11 +388,11 @@ export class BrandingService {
     }
 
     // Update brand with new logo and optionally new colors
-    const updateData: any = { logo: logoUrl };
+    const updateData: any = await this.storeLogo(logoUrl, tenantId);
     if (dto.primaryColor) updateData.primaryColor = dto.primaryColor;
     if (dto.secondaryColor) updateData.secondaryColor = dto.secondaryColor;
     if (dto.accentColor) updateData.accentColor = dto.accentColor;
-    if (dto.style) updateData.tone = dto.style;
+    // A logo style is a visual choice; the tone of voice is left alone.
 
     return this.prisma.brand.update({
       where: { id },
