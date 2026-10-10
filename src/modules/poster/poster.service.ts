@@ -1350,8 +1350,10 @@ Direction créative: ${JSON.stringify(artDirection || { instruction: 'Déduire u
     });
   }
 
-  async getPosters(tenantId: string) {
-    return this.prisma.poster.findMany({ where: { tenantId }, orderBy: { createdAt: 'desc' } });
+  async getPosters(tenantId: string, summary = false) {
+    const posters = await this.prisma.poster.findMany({ where: { tenantId }, orderBy: { createdAt: 'desc' } });
+    // Each poster's HTML weighs 5 to 10 KB; the list page shows none of it.
+    return summary ? posters.map(({ content: _content, sections: _sections, ...rest }) => rest) : posters;
   }
 
   async getPosterById(id: string, tenantId: string) {

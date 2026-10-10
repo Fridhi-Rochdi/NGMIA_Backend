@@ -26,9 +26,10 @@ export class PosterController {
     return this.posterService.generatePoster(dto, tenantId, userId);
   }
 
+  /** `?summary=1` leaves out each poster's HTML document: lists do not show it. */
   @Get()
-  async getPosters(@CurrentUser('tenantId') tenantId: string) {
-    return this.posterService.getPosters(tenantId);
+  async getPosters(@CurrentUser('tenantId') tenantId: string, @Query('summary') summary?: string) {
+    return this.posterService.getPosters(tenantId, summary === '1' || summary === 'true');
   }
 
   @Public()

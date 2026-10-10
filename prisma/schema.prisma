@@ -76,6 +76,7 @@ model User {
   reels         Reel[]
 
   @@unique([email, tenantId])
+  @@index([tenantId])
   @@map("users")
 }
 
@@ -207,6 +208,7 @@ model Brand {
   tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@unique([slug, tenantId])
+  @@index([tenantId, updatedAt])
   @@map("brands")
 }
 
@@ -270,6 +272,7 @@ model Content {
   userId   String
   user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@index([tenantId, createdAt])
   @@map("contents")
 }
 
@@ -305,6 +308,7 @@ model Image {
   userId   String
   user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@index([tenantId, createdAt])
   @@map("images")
 }
 
@@ -328,6 +332,7 @@ model Calendar {
 
   events CalendarEvent[]
 
+  @@index([tenantId, createdAt])
   @@map("calendars")
 }
 
@@ -362,6 +367,7 @@ model CalendarEvent {
 
   /// The scheduler's hot query: everything due, by status and time.
   @@index([status, scheduledAt])
+  @@index([calendarId, scheduledAt])
   @@map("calendar_events")
 }
 
@@ -397,6 +403,7 @@ model SocialAccount {
   tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@unique([platform, accountId, tenantId])
+  @@index([tenantId, platform])
   @@map("social_accounts")
 }
 
@@ -523,6 +530,7 @@ model Invoice {
   subscriptionId String
   subscription   Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
 
+  @@index([subscriptionId, createdAt])
   @@map("invoices")
 }
 
@@ -541,6 +549,7 @@ model PaymentMethod {
   tenantId String
   tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
+  @@index([tenantId])
   @@map("payment_methods")
 }
 
@@ -608,6 +617,7 @@ model Website {
   userId   String
   user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@index([tenantId, createdAt])
   @@map("websites")
 }
 
@@ -652,6 +662,7 @@ model Menu {
   userId   String
   user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@index([tenantId, createdAt])
   @@map("menus")
 }
 
@@ -689,6 +700,7 @@ model Poster {
   userId   String
   user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@index([tenantId, createdAt])
   @@map("posters")
 }
 
@@ -715,6 +727,7 @@ model QrCode {
   userId   String
   user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@index([tenantId, createdAt])
   @@map("qr_codes")
 }
 

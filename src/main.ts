@@ -3,6 +3,7 @@ import { ValidationPipe } from '@nestjs/common';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { join } from 'path';
+import { thumbnailMiddleware } from './common/storage/thumbnail.middleware';
 import * as cookieParser from 'cookie-parser';
 import { AppModule } from './app.module';
 import { assertPublicUrlsConfigured } from './common/app-url';
@@ -42,6 +43,8 @@ async function bootstrap() {
   //
   // These files are public by design — anyone holding the URL of a published
   // menu can already see them — so the allowance is deliberate, not a leak.
+  // Resized copies for lists and thumbnails (?w=320); the originals below.
+  app.use('/uploads', thumbnailMiddleware(join(process.cwd(), 'storage')));
   app.useStaticAssets(join(process.cwd(), 'storage', 'uploads'), {
     prefix: '/uploads/',
     setHeaders: (res) => {
